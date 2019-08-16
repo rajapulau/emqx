@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,12 +12,15 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx).
 
 -include("emqx.hrl").
 -include("logger.hrl").
 -include("types.hrl").
+
+-logger_header("[EMQ X]").
 
 %% Start/Stop the application
 -export([ start/0
@@ -59,9 +63,13 @@
 
 -define(APP, ?MODULE).
 
-%%------------------------------------------------------------------------------
+-define(COPYRIGHT, "Copyright (c) 2019 EMQ Technologies Co., Ltd").
+
+-define(LICENSE_MESSAGE, "Licensed under the Apache License, Version 2.0").
+
+%%--------------------------------------------------------------------
 %% Bootstrap, is_running...
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 %% @doc Start emqx application
 -spec(start() -> {ok, list(atom())} | {error, term()}).
@@ -75,6 +83,8 @@ start() ->
 restart(ConfFile) ->
     reload_config(ConfFile),
     shutdown(),
+    ok = application:stop(mnesia),
+    application:start(mnesia),
     reboot().
 
 %% @doc Stop emqx application.
@@ -91,9 +101,9 @@ is_running(Node) ->
         Pid when is_pid(Pid) -> true
     end.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% PubSub API
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 -spec(subscribe(emqx_topic:topic() | string()) -> ok).
 subscribe(Topic) ->
@@ -110,7 +120,7 @@ subscribe(Topic, SubOpts) when is_map(SubOpts) ->
 subscribe(Topic, SubId, SubOpts) when (is_atom(SubId) orelse is_binary(SubId)), is_map(SubOpts) ->
     emqx_broker:subscribe(iolist_to_binary(Topic), SubId, SubOpts).
 
--spec(publish(emqx_types:message()) -> emqx_types:deliver_results()).
+-spec(publish(emqx_types:message()) -> emqx_types:publish_result()).
 publish(Msg) ->
     emqx_broker:publish(Msg).
 
@@ -118,9 +128,9 @@ publish(Msg) ->
 unsubscribe(Topic) ->
     emqx_broker:unsubscribe(iolist_to_binary(Topic)).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% PubSub management API
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 -spec(topics() -> list(emqx_topic:topic())).
 topics() -> emqx_router:topics().
@@ -139,9 +149,9 @@ subscribed(SubPid, Topic) when is_pid(SubPid) ->
 subscribed(SubId, Topic) when is_atom(SubId); is_binary(SubId) ->
     emqx_broker:subscribed(SubId, iolist_to_binary(Topic)).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Hooks API
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 -spec(hook(emqx_hooks:hookpoint(), emqx_hooks:action()) -> ok | {error, already_exists}).
 hook(HookPoint, Action) ->
@@ -173,15 +183,15 @@ run_hook(HookPoint, Args) ->
 run_fold_hook(HookPoint, Args, Acc) ->
     emqx_hooks:run_fold(HookPoint, Args, Acc).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Shutdown and reboot
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 shutdown() ->
     shutdown(normal).
 
 shutdown(Reason) ->
-    ?LOG(critical, "[EMQ X] emqx shutdown for ~s", [Reason]),
+    ?LOG(critical, "emqx shutdown for ~s", [Reason]),
     emqx_alarm_handler:unload(),
     emqx_plugins:unload(),
     lists:foreach(fun application:stop/1, [emqx, ekka, cowboy, ranch, esockd, gproc]).
@@ -189,12 +199,13 @@ shutdown(Reason) ->
 reboot() ->
     lists:foreach(fun application:start/1, [gproc, esockd, ranch, cowboy, ekka, emqx]).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Internal functions
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 reload_config(ConfFile) ->
     {ok, [Conf]} = file:consult(ConfFile),
     lists:foreach(fun({App, Vals}) ->
                       [application:set_env(App, Par, Val) || {Par, Val} <- Vals]
                   end, Conf).
+

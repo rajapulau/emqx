@@ -85,6 +85,13 @@
   {datatype, string}
 ]}.
 
+%% @doc The erlang distributed protocol
+{mapping, "cluster.proto_dist", "ekka.proto_dist", [
+  {default, "inet_tcp"},
+  {datatype, {enum, [inet_tcp, inet6_tcp, inet_tls]}},
+  hidden
+]}.
+
 {mapping, "cluster.dns.app", "ekka.cluster_discovery", [
   {datatype, string}
 ]}.
@@ -129,7 +136,7 @@
 ]}.
 
 {mapping, "cluster.k8s.address_type", "ekka.cluster_discovery", [
-  {datatype, {enum, [ip, dns]}}
+  {datatype, {enum, [ip, dns, hostname]}}
 ]}.
 
 {mapping, "cluster.k8s.app_name", "ekka.cluster_discovery", [
@@ -139,6 +146,11 @@
 {mapping, "cluster.k8s.namespace", "ekka.cluster_discovery", [
   {datatype, string}
 ]}.
+
+{mapping, "cluster.k8s.suffix", "ekka.cluster_discovery", [
+    {datatype, string},
+    {default, ""}
+  ]}.
 
 {translation, "ekka.cluster_discovery", fun(Conf) ->
   Strategy = cuttlefish:conf_get("cluster.discovery", Conf),
@@ -176,7 +188,8 @@
                   {service_name, cuttlefish:conf_get("cluster.k8s.service_name", Conf)},
                   {address_type, cuttlefish:conf_get("cluster.k8s.address_type", Conf, ip)},
                   {app_name, cuttlefish:conf_get("cluster.k8s.app_name", Conf)},
-                  {namespace, cuttlefish:conf_get("cluster.k8s.namespace", Conf)}];
+                  {namespace, cuttlefish:conf_get("cluster.k8s.namespace", Conf)},
+                  {suffix, cuttlefish:conf_get("cluster.k8s.suffix", Conf, "")}];
                (manual) ->
                  [ ]
             end,
@@ -192,12 +205,7 @@ end}.
   {default, "emqx@127.0.0.1"}
 ]}.
 
-%% @doc The erlang distributed protocol
-{mapping, "node.proto_dist", "vm_args.-proto_dist", [
-  %{default, "inet_tcp"},
-  {datatype, {enum, [inet_tcp, inet6_tcp, inet_tls]}},
-  hidden
-]}.
+
 
 %% @doc Specify SSL Options in the file if using SSL for erlang distribution
 {mapping, "node.ssl_dist_optfile", "vm_args.-ssl_dist_optfile", [
@@ -332,6 +340,17 @@ end}.
 %% RPC
 %%--------------------------------------------------------------------
 
+%% RPC Mode.
+{mapping, "rpc.mode", "emqx.rpc_mode", [
+  {default, async},
+  {datatype, {enum, [sync, async]}}
+]}.
+
+{mapping, "rpc.async_batch_size", "gen_rpc.max_batch_size", [
+  {default, 256},
+  {datatype, integer}
+]}.
+
 %% RPC server port.
 {mapping, "rpc.tcp_server_port", "gen_rpc.tcp_server_port", [
   {default, 5369},
@@ -342,6 +361,13 @@ end}.
 {mapping, "rpc.tcp_client_port", "gen_rpc.tcp_client_port", [
   {default, 5369},
   {datatype, integer}
+]}.
+
+%% Default TCP port for outgoing connections
+{mapping, "rpc.tcp_client_num", "gen_rpc.tcp_client_num", [
+  {default, 32},
+  {datatype, integer},
+  {validators, ["range:gt_0_lt_256"]}
 ]}.
 
 %% Client connect timeout
@@ -386,6 +412,28 @@ end}.
   {datatype, integer}
 ]}.
 
+%% Size of TCP send buffer
+{mapping, "rpc.socket_sndbuf", "gen_rpc.socket_sndbuf", [
+  {default, "1MB"},
+  {datatype, bytesize}
+]}.
+
+%% Size of TCP receive buffer
+{mapping, "rpc.socket_recbuf", "gen_rpc.socket_recbuf", [
+  {default, "1MB"},
+  {datatype, bytesize}
+]}.
+
+%% Size of TCP receive buffer
+{mapping, "rpc.socket_buffer", "gen_rpc.socket_buffer", [
+  {default, "1MB"},
+  {datatype, bytesize}
+]}.
+
+{validator, "range:gt_0_lt_256", "must greater than 0 and less than 256",
+  fun(X) -> X > 0 andalso X < 256 end
+}.
+
 %%--------------------------------------------------------------------
 %% Log
 %%--------------------------------------------------------------------
@@ -396,12 +444,12 @@ end}.
 ]}.
 
 {mapping, "log.level", "kernel.logger", [
-  {default, error},
+  {default, warning},
   {datatype, {enum, [debug, info, notice, warning, error, critical, alert, emergency, all]}}
 ]}.
 
 {mapping, "log.primary_log_level", "kernel.logger_level", [
-   {default, error},
+   {default, warning},
    {datatype, {enum, [debug, info, notice, warning, error, critical, alert, emergency, all]}}
 ]}.
 
@@ -421,7 +469,7 @@ end}.
 ]}.
 
 {mapping, "log.chars_limit", "kernel.logger", [
-  {default, 8192},
+  {default, -1},
   {datatype, integer}
 ]}.
 
@@ -628,19 +676,19 @@ end}.
 ]}.
 
 %% @doc Whether the server supports MQTT retained messages.
-{mapping, "mqtt.retain_available", "emqx.mqtt_retain_available", [
+{mapping, "mqtt.retain_available", "emqx.retain_available", [
   {default, true},
   {datatype, {enum, [true, false]}}
 ]}.
 
 %% @doc Whether the Server supports MQTT Wildcard Subscriptions.
-{mapping, "mqtt.wildcard_subscription", "emqx.mqtt_wildcard_subscription", [
+{mapping, "mqtt.wildcard_subscription", "emqx.wildcard_subscription", [
   {default, true},
   {datatype, {enum, [true, false]}}
 ]}.
 
 %% @doc Whether the Server supports MQTT Shared Subscriptions.
-{mapping, "mqtt.shared_subscription", "emqx.mqtt_shared_subscription", [
+{mapping, "mqtt.shared_subscription", "emqx.shared_subscription", [
   {default, true},
   {datatype, {enum, [true, false]}}
 ]}.
@@ -870,7 +918,7 @@ end}.
 
 {translation, "emqx.zones", fun(Conf) ->
   Mapping = fun("retain_available", Val) ->
-                    {mqtt_retain_available, Val};
+                    {retain_available, Val};
                ("flapping_threshold", Val) ->
                     [Limit, Duration] = string:tokens(Val, ", "),
                     FlappingThreshold = case cuttlefish_duration:parse(Duration, s) of
@@ -881,9 +929,9 @@ end}.
                                         end,
                     {flapping_threshold, FlappingThreshold};
                ("wildcard_subscription", Val) ->
-                    {mqtt_wildcard_subscription, Val};
+                    {wildcard_subscription, Val};
                ("shared_subscription", Val) ->
-                    {mqtt_shared_subscription, Val};
+                    {shared_subscription, Val};
                ("publish_limit", Val) ->
                     [Limit, Duration] = string:tokens(Val, ", "),
                     PubLimit = case cuttlefish_duration:parse(Duration, s) of
@@ -1713,237 +1761,6 @@ end}.
 end}.
 
 %%--------------------------------------------------------------------
-%% Bridges
-%%--------------------------------------------------------------------
-{mapping, "bridge.$name.address", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.proto_ver", "emqx.bridges", [
-  {datatype, {enum, [mqttv3, mqttv4, mqttv5]}}
-]}.
-
-{mapping, "bridge.$name.client_id", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.clean_start", "emqx.bridges", [
-  {default, true},
-  {datatype, {enum, [true, false]}}
-]}.
-
-{mapping, "bridge.$name.username", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.password", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.mountpoint", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.forwards", "emqx.bridges", [
-  {datatype, string},
-  {default, ""}
-]}.
-
-{mapping, "bridge.$name.ssl", "emqx.bridges", [
-  {datatype, flag},
-  {default, off}
-]}.
-
-{mapping, "bridge.$name.cacertfile", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.certfile", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.keyfile", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.ciphers", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.psk_ciphers", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.keepalive", "emqx.bridges", [
-  {default, "10s"},
-  {datatype, {duration, ms}}
-]}.
-
-{mapping, "bridge.$name.tls_versions", "emqx.bridges", [
-  {datatype, string},
-  {default, "tlsv1,tlsv1.1,tlsv1.2"}
-]}.
-
-{mapping, "bridge.$name.subscription.$id.topic", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.subscription.$id.qos", "emqx.bridges", [
-  {datatype, integer}
-]}.
-
-{mapping, "bridge.$name.start_type", "emqx.bridges", [
-  {datatype, {enum, [manual, auto]}},
-  {default, auto}
-]}.
-
-{mapping, "bridge.$name.reconnect_interval", "emqx.bridges", [
-  {default, "30s"},
-  {datatype, {duration, ms}}
-]}.
-
-{mapping, "bridge.$name.retry_interval", "emqx.bridges", [
-  {default, "20s"},
-  {datatype, {duration, ms}}
-]}.
-
-{mapping, "bridge.$name.max_inflight_batches", "emqx.bridges", [
-  {default, 0},
-  {datatype, integer}
-]}.
-
-{mapping, "bridge.$name.queue.batch_count_limit", "emqx.bridges", [
-  {datatype, integer}
-]}.
-
-{mapping, "bridge.$name.queue.batch_bytes_limit", "emqx.bridges", [
-  {datatype, bytesize}
-]}.
-
-{mapping, "bridge.$name.queue.replayq_dir", "emqx.bridges", [
-  {datatype, string}
-]}.
-
-{mapping, "bridge.$name.queue.replayq_seg_bytes", "emqx.bridges", [
-  {datatype, bytesize}
-]}.
-
-{translation, "emqx.bridges", fun(Conf) ->
-    MapPSKCiphers = fun(PSKCiphers) ->
-                      lists:map(
-                          fun("PSK-AES128-CBC-SHA") -> {psk, aes_128_cbc, sha};
-                             ("PSK-AES256-CBC-SHA") -> {psk, aes_256_cbc, sha};
-                             ("PSK-3DES-EDE-CBC-SHA") -> {psk, '3des_ede_cbc', sha};
-                             ("PSK-RC4-SHA") -> {psk, rc4_128, sha}
-                          end, PSKCiphers)
-                    end,
-
-    Split = fun(undefined) -> undefined; (S) -> string:tokens(S, ",") end,
-
-    IsSsl = fun(cacertfile)   -> true;
-               (certfile)     -> true;
-               (keyfile)      -> true;
-               (ciphers)      -> true;
-               (psk_ciphers)  -> true;
-               (tls_versions) -> true;
-               (_Opt)         -> false
-            end,
-
-    Parse = fun(tls_versions, Vers) ->
-                    [{versions, [list_to_atom(S) || S <- Split(Vers)]}];
-               (ciphers, Ciphers) ->
-                    [{ciphers, Split(Ciphers)}];
-               (psk_ciphers, Ciphers) ->
-                    [{ciphers, MapPSKCiphers(Split(Ciphers))}, {user_lookup_fun, {fun emqx_psk:lookup/3, <<>>}}];
-               (Opt, Val) ->
-                    [{Opt, Val}]
-            end,
-
-    Merge = fun(forwards, Val, Opts) ->
-                  [{forwards, string:tokens(Val, ",")}|Opts];
-               (Opt, Val, Opts) ->
-                  case IsSsl(Opt) of
-                      true ->
-                          SslOpts = Parse(Opt, Val) ++ proplists:get_value(ssl_opts, Opts, []),
-                          lists:ukeymerge(1, [{ssl_opts, SslOpts}], lists:usort(Opts));
-                      false ->
-                          [{Opt, Val}|Opts]
-                  end
-            end,
-    Queue = fun(Name) ->
-                Configs = cuttlefish_variable:filter_by_prefix("bridge." ++ Name ++ ".queue", Conf),
-                QOpts = [{list_to_atom(QOpt), QValue}|| {[_, _, "queue", QOpt], QValue} <- Configs],
-                maps:from_list(QOpts)
-            end,
-    Subscriptions = fun(Name) ->
-                        Configs = cuttlefish_variable:filter_by_prefix("bridge." ++ Name ++ ".subscription", Conf),
-                        lists:zip([Topic || {_, Topic} <- lists:sort([{I, Topic} || {[_, _, "subscription", I, "topic"], Topic} <- Configs])],
-                                  [QoS || {_, QoS} <- lists:sort([{I, QoS} || {[_, _, "subscription", I, "qos"], QoS} <- Configs])])
-                    end,
-    IsNodeAddr = fun(Addr) ->
-                      case string:tokens(Addr, "@") of
-                          [_NodeName, _Hostname] -> true;
-                           _ -> false
-                      end
-                 end,
-    ConnMod = fun(Name) ->
-                      [AddrConfig] = cuttlefish_variable:filter_by_prefix("bridge." ++ Name ++ ".address", Conf),
-                      {_, Addr} = AddrConfig,
-                      Subs = Subscriptions(Name),
-                      case IsNodeAddr(Addr) of
-                          true when Subs =/= [] ->
-                              error({"subscriptions are not supported when bridging between emqx nodes", Name, Subs});
-                          true ->
-                              emqx_bridge_rpc;
-                          false ->
-                              emqx_bridge_mqtt
-                      end
-              end,
-    %% to be backward compatible
-    Translate =
-        fun Tr(queue, Q, Cfg) ->
-                NewQ = maps:fold(Tr, #{}, Q),
-                Cfg#{queue => NewQ};
-            Tr(address, Addr0, Cfg) ->
-                Addr = case IsNodeAddr(Addr0) of
-                           true -> list_to_atom(Addr0);
-                           false -> Addr0
-                       end,
-                Cfg#{address => Addr};
-            Tr(batch_size, Count, Cfg) ->
-                Cfg#{batch_count_limit => Count};
-            Tr(reconnect_interval, Ms, Cfg) ->
-                Cfg#{reconnect_delay_ms => Ms};
-            Tr(max_inflight, Count, Cfg) ->
-                Cfg#{max_inflight_batches => Count};
-            Tr(proto_ver, Ver, Cfg) ->
-                Cfg#{proto_ver =>
-                   case Ver of
-                       mqttv3 -> v3;
-                       mqttv4 -> v4;
-                       mqttv5 -> v5;
-                       _ -> v4
-                   end};
-            Tr(Key, Value, Cfg) ->
-                Cfg#{Key => Value}
-         end,
-    C = lists:foldl(
-        fun({["bridge", Name, Opt], Val}, Acc) ->
-                %% e.g #{aws => [{OptKey, OptVal}]}
-                Init = [{list_to_atom(Opt), Val},
-                        {connect_module, ConnMod(Name)},
-                        {subscriptions, Subscriptions(Name)},
-                        {queue, Queue(Name)}],
-                maps:update_with(list_to_atom(Name), fun(Opts) -> Merge(list_to_atom(Opt), Val, Opts) end, Init, Acc);
-           (_, Acc) -> Acc
-        end, #{}, lists:usort(cuttlefish_variable:filter_by_prefix("bridge.", Conf))),
-    C1 = maps:map(fun(Bn, Bc) ->
-                      maps:to_list(maps:fold(Translate, #{}, maps:from_list(Bc)))
-                  end, C),
-    maps:to_list(C1)
-end}.
-
-%%--------------------------------------------------------------------
 %% Modules
 %%--------------------------------------------------------------------
 
@@ -2036,6 +1853,11 @@ end}.
 {mapping, "broker.sys_interval", "emqx.broker_sys_interval", [
   {datatype, {duration, ms}},
   {default, "1m"}
+]}.
+
+{mapping, "broker.sys_heartbeat", "emqx.broker_sys_heartbeat", [
+  {datatype, {duration, ms}},
+  {default, "30s"}
 ]}.
 
 {mapping, "broker.enable_session_registry", "emqx.enable_session_registry", [

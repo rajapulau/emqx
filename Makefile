@@ -3,22 +3,60 @@
 REBAR_GIT_CLONE_OPTIONS += --depth 1
 export REBAR_GIT_CLONE_OPTIONS
 
-# CT_SUITES = emqx_trie emqx_router emqx_frame emqx_mqtt_compat
+SUITES_FILES := $(shell find test -name '*_SUITE.erl')
 
-CT_SUITES = emqx emqx_client emqx_zone emqx_banned emqx_session \
-			emqx_broker emqx_cm emqx_frame emqx_guid emqx_inflight emqx_json \
-			emqx_keepalive emqx_lib emqx_metrics emqx_mod emqx_mod_sup emqx_mqtt_caps \
-			emqx_mqtt_props emqx_mqueue emqx_net emqx_pqueue emqx_router emqx_sm \
-			emqx_tables emqx_time emqx_topic emqx_trie emqx_vm emqx_mountpoint \
-			emqx_listeners emqx_protocol emqx_pool emqx_shared_sub emqx_bridge \
-			emqx_hooks emqx_batch emqx_sequence emqx_pmon emqx_pd emqx_gc emqx_ws_connection \
-			emqx_packet emqx_connection emqx_tracer emqx_sys_mon emqx_message emqx_os_mon \
-            emqx_vm_mon emqx_alarm_handler emqx_rpc emqx_flapping
+CT_SUITES := $(foreach value,$(SUITES_FILES),$(shell val=$$(basename $(value) .erl); echo $${val%_*}))
 
 CT_NODE_NAME = emqxct@127.0.0.1
 
-compile:
+RUN_NODE_NAME = emqxdebug@127.0.0.1
+
+.PHONY: all
+all: compile
+
+.PHONY: tests
+tests: eunit ct proper
+
+.PHONY: proper
+proper:
+	@rebar3 proper
+
+.PHONY: run
+run: run_setup unlock
+	@rebar3 as test get-deps
+	@rebar3 as test auto --name $(RUN_NODE_NAME) --script scripts/run_emqx.escript
+
+.PHONY: run_setup
+run_setup:
+	@erl -noshell -eval \
+	    "{ok, [[HOME]]} = init:get_argument(home), \
+		 FilePath = HOME ++ \"/.config/rebar3/rebar.config\", \
+		 case file:consult(FilePath) of \
+             {ok, Term} -> \
+				 NewTerm = case lists:keyfind(plugins, 1, Term) of \
+	                           false -> [{plugins, [rebar3_auto]} | Term]; \
+	                	  	   {plugins, OldPlugins} -> \
+		          		           NewPlugins0 = OldPlugins -- [rebar3_auto], \
+	             	     	       NewPlugins = [rebar3_auto | NewPlugins0], \
+                                   lists:keyreplace(plugins, 1, Term, {plugins, NewPlugins}) \
+	                       end, \
+	             ok = file:write_file(FilePath, [io_lib:format(\"~p.\n\", [I]) || I <- NewTerm]); \
+            _Enoent -> \
+		        os:cmd(\"mkdir -p ~/.config/rebar3/ \"), \
+	            NewTerm=[{plugins, [rebar3_auto]}], \
+	            ok = file:write_file(FilePath, [io_lib:format(\"~p.\n\", [I]) || I <- NewTerm]) \
+	     end, \
+	     halt(0)."
+
+.PHONY: shell
+shell:
+	@rebar3 as test auto
+
+compile: unlock
 	@rebar3 compile
+
+unlock:
+	@rebar3 unlock
 
 clean: distclean
 
@@ -45,8 +83,8 @@ deps:
 eunit:
 	@rebar3 eunit -v
 
-.PHONY: ct-setup
-ct-setup:
+.PHONY: ct_setup
+ct_setup:
 	rebar3 as test compile
 	@mkdir -p data
 	@if [ ! -f data/loaded_plugins ]; then touch data/loaded_plugins; fi
@@ -54,14 +92,14 @@ ct-setup:
 	@ln -s -f '../../../../data' _build/test/lib/emqx/
 
 .PHONY: ct
-ct: ct-setup
+ct: ct_setup
 	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(shell echo $(foreach var,$(CT_SUITES),test/$(var)_SUITE) | tr ' ' ',')
 
 ## Run one single CT with rebar3
 ## e.g. make ct-one-suite suite=emqx_bridge
-.PHONY: ct-one-suite
-ct-one-suite: ct-setup
-	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(suite)_SUITE
+.PHONY: $(SUITES:%=ct-%)
+$(CT_SUITES:%=ct-%): ct_setup
+	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(@:ct-%=%)_SUITE
 
 .PHONY: app.config
 app.config: $(CUTTLEFISH_SCRIPT) etc/gen.emqx.conf
@@ -92,5 +130,6 @@ gen-clean:
 
 .PHONY: distclean
 distclean: gen-clean
+	@rm -rf Mnesia.*
 	@rm -rf _build cover deps logs log data
 	@rm -f rebar.lock compile_commands.json cuttlefish erl_crash.dump

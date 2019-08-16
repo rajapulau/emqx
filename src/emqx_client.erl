@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_client).
 
@@ -18,9 +20,13 @@
 
 -include("logger.hrl").
 -include("types.hrl").
--include("emqx_client.hrl").
+-include("emqx_mqtt.hrl").
 
--export([start_link/0, start_link/1]).
+-logger_header("[Client]").
+
+-export([ start_link/0
+        , start_link/1
+        ]).
 
 -export([ connect/1
         , disconnect/1
@@ -138,7 +144,17 @@
                 | {force_ping, boolean()}
                 | {properties, properties()}).
 
--type(mqtt_msg() :: #mqtt_msg{}).
+-record(mqtt_msg, {
+          qos = ?QOS_0,
+          retain = false,
+          dup = false,
+          packet_id,
+          topic,
+          props,
+          payload
+         }).
+
+-opaque(mqtt_msg() :: #mqtt_msg{}).
 
 -record(state, {name            :: atom(),
                 owner           :: pid(),
@@ -154,7 +170,7 @@
                 clean_start     :: boolean(),
                 username        :: maybe(binary()),
                 password        :: maybe(binary()),
-                proto_ver       :: emqx_mqtt_types:version(),
+                proto_ver       :: emqx_types:mqtt_ver(),
                 proto_name      :: iodata(),
                 keepalive       :: non_neg_integer(),
                 keepalive_timer :: maybe(reference()),
@@ -175,7 +191,8 @@
                 retry_timer     :: reference(),
                 session_present :: boolean(),
                 last_packet_id  :: packet_id(),
-                parse_state     :: emqx_frame:state()}).
+                parse_state     :: emqx_frame:state()
+               }).
 
 -record(call, {id, from, req, ts}).
 
@@ -185,11 +202,11 @@
 
 -type(payload() :: iodata()).
 
--type(packet_id() :: emqx_mqtt_types:packet_id()).
+-type(packet_id() :: emqx_types:packet_id()).
 
--type(properties() :: emqx_mqtt_types:properties()).
+-type(properties() :: emqx_types:properties()).
 
--type(qos() :: emqx_mqtt_types:qos_name() | emqx_mqtt_types:qos()).
+-type(qos() :: emqx_types:qos_name() | emqx_types:qos()).
 
 -type(pubopt() :: {retain, boolean()} | {qos, qos()} | {timeout, timeout()}).
 
@@ -198,13 +215,13 @@
                 | {nl,  boolean()}
                 | {qos, qos()}).
 
--type(reason_code() :: emqx_mqtt_types:reason_code()).
+-type(reason_code() :: emqx_types:reason_code()).
 
 -type(subscribe_ret() :: {ok, properties(), [reason_code()]} | {error, term()}).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% API
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 -spec(start_link() -> gen_statem:start_ret()).
 start_link() -> start_link([]).
@@ -352,9 +369,9 @@ disconnect(Client, ReasonCode) ->
 disconnect(Client, ReasonCode, Properties) ->
     gen_statem:call(Client, {disconnect, ReasonCode, Properties}).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% For test cases
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 puback(Client, PacketId) when is_integer(PacketId) ->
     puback(Client, PacketId, ?RC_SUCCESS).
@@ -407,9 +424,9 @@ pause(Client) ->
 resume(Client) ->
     gen_statem:call(Client, resume).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% gen_statem callbacks
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 init([Options]) ->
     process_flag(trap_exit, true),
@@ -443,7 +460,8 @@ init([Options]) ->
                                  ack_timeout     = ?DEFAULT_ACK_TIMEOUT,
                                  retry_interval  = 0,
                                  connect_timeout = ?DEFAULT_CONNECT_TIMEOUT,
-                                 last_packet_id  = 1}),
+                                 last_packet_id  = 1
+                                }),
     {ok, initialized, init_parse_state(State)}.
 
 random_client_id() ->
@@ -563,9 +581,10 @@ init_will_msg({qos, QoS}, WillMsg) ->
     WillMsg#mqtt_msg{qos = ?QOS_I(QoS)}.
 
 init_parse_state(State = #state{proto_ver = Ver, properties = Properties}) ->
-    Size = maps:get('Maximum-Packet-Size', Properties, ?MAX_PACKET_SIZE),
-    State#state{parse_state = emqx_frame:initial_state(
-                                #{max_packet_size => Size, version => Ver})}.
+    MaxSize = maps:get('Maximum-Packet-Size', Properties, ?MAX_PACKET_SIZE),
+    ParseState = emqx_frame:initial_parse_state(
+                   #{max_size => MaxSize, version => Ver}),
+    State#state{parse_state = ParseState}.
 
 callback_mode() -> state_functions.
 
@@ -787,10 +806,10 @@ connected(cast, ?PUBREC_PACKET(PacketId), State = #state{inflight = Inflight}) -
                         Inflight1 = emqx_inflight:update(PacketId, {pubrel, PacketId, os:timestamp()}, Inflight),
                         State#state{inflight = Inflight1};
                     {value, {pubrel, _Ref, _Ts}} ->
-                        ?LOG(notice, "[Client] Duplicated PUBREC Packet: ~p", [PacketId]),
+                        ?LOG(notice, "Duplicated PUBREC Packet: ~p", [PacketId]),
                         State;
                     none ->
-                        ?LOG(warning, "[Client] Unexpected PUBREC Packet: ~p", [PacketId]),
+                        ?LOG(warning, "Unexpected PUBREC Packet: ~p", [PacketId]),
                         State
                 end);
 
@@ -805,7 +824,7 @@ connected(cast, ?PUBREL_PACKET(PacketId),
                  false -> {keep_state, NewState}
              end;
          error ->
-             ?LOG(warning, "[Client] Unexpected PUBREL: ~p", [PacketId]),
+             ?LOG(warning, "Unexpected PUBREL: ~p", [PacketId]),
              keep_state_and_data
      end;
 
@@ -904,37 +923,37 @@ handle_event({call, From}, stop, _StateName, _State) ->
     {stop_and_reply, normal, [{reply, From, ok}]};
 handle_event(info, {TcpOrSsL, _Sock, Data}, _StateName, State)
     when TcpOrSsL =:= tcp; TcpOrSsL =:= ssl ->
-    ?LOG(debug, "[Client] RECV Data: ~p", [Data]),
+    ?LOG(debug, "RECV Data: ~p", [Data]),
     process_incoming(Data, [], run_sock(State));
 
 handle_event(info, {Error, _Sock, Reason}, _StateName, State)
     when Error =:= tcp_error; Error =:= ssl_error ->
-    ?LOG(error, "[Client] The connection error occured ~p, reason:~p", [Error, Reason]),
+    ?LOG(error, "The connection error occured ~p, reason:~p", [Error, Reason]),
     {stop, {shutdown, Reason}, State};
 
 handle_event(info, {Closed, _Sock}, _StateName, State)
     when Closed =:= tcp_closed; Closed =:= ssl_closed ->
-    ?LOG(debug, "[Client] ~p", [Closed]),
+    ?LOG(debug, "~p", [Closed]),
     {stop, {shutdown, Closed}, State};
 
 handle_event(info, {'EXIT', Owner, Reason}, _, State = #state{owner = Owner}) ->
-    ?LOG(debug, "[Client] Got EXIT from owner, Reason: ~p", [Reason]),
+    ?LOG(debug, "Got EXIT from owner, Reason: ~p", [Reason]),
     {stop, {shutdown, Reason}, State};
 
 handle_event(info, {inet_reply, _Sock, ok}, _, _State) ->
     keep_state_and_data;
 
 handle_event(info, {inet_reply, _Sock, {error, Reason}}, _, State) ->
-    ?LOG(error, "[Client] Got tcp error: ~p", [Reason]),
+    ?LOG(error, "Got tcp error: ~p", [Reason]),
     {stop, {shutdown, Reason}, State};
 
 handle_event(info, EventContent = {'EXIT', _Pid, normal}, StateName, _State) ->
-    ?LOG(info, "[Client] State: ~s, Unexpected Event: (info, ~p)",
+    ?LOG(info, "State: ~s, Unexpected Event: (info, ~p)",
          [StateName, EventContent]),
     keep_state_and_data;
 
 handle_event(EventType, EventContent, StateName, _StateData) ->
-    ?LOG(error, "[Client] State: ~s, Unexpected Event: (~p, ~p)",
+    ?LOG(error, "State: ~s, Unexpected Event: (~p, ~p)",
          [StateName, EventType, EventContent]),
     keep_state_and_data.
 
@@ -955,9 +974,9 @@ terminate(Reason, _StateName, State = #state{socket = Socket}) ->
 code_change(_Vsn, State, Data, _Extra) ->
     {ok, State, Data}.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Internal functions
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 should_ping(Sock) ->
     case emqx_client_sock:getstat(Sock, [send_oct]) of
@@ -977,7 +996,7 @@ delete_inflight(?PUBACK_PACKET(PacketId, ReasonCode, Properties),
                                                    properties  => Properties}),
             State#state{inflight = emqx_inflight:delete(PacketId, Inflight)};
         none ->
-            ?LOG(warning, "[Client] Unexpected PUBACK: ~p", [PacketId]),
+            ?LOG(warning, "Unexpected PUBACK: ~p", [PacketId]),
             State
     end;
 delete_inflight(?PUBCOMP_PACKET(PacketId, ReasonCode, Properties),
@@ -989,7 +1008,7 @@ delete_inflight(?PUBCOMP_PACKET(PacketId, ReasonCode, Properties),
                                                    properties  => Properties}),
             State#state{inflight = emqx_inflight:delete(PacketId, Inflight)};
         none ->
-            ?LOG(warning, "[Client] Unexpected PUBCOMP Packet: ~p", [PacketId]),
+            ?LOG(warning, "Unexpected PUBCOMP Packet: ~p", [PacketId]),
             State
      end.
 
@@ -1010,7 +1029,8 @@ assign_id(?NO_CLIENT_ID, Props) ->
 assign_id(Id, _Props) ->
     Id.
 
-publish_process(?QOS_1, Packet = ?PUBLISH_PACKET(?QOS_1, PacketId), State0 = #state{auto_ack = AutoAck}) ->
+publish_process(?QOS_1, Packet = ?PUBLISH_PACKET(?QOS_1, PacketId),
+                State0 = #state{auto_ack = AutoAck}) ->
     State = deliver(packet_to_msg(Packet), State0),
     case AutoAck of
         true  -> send_puback(?PUBACK_PACKET(PacketId), State);
@@ -1161,7 +1181,7 @@ msg_to_packet(#mqtt_msg{qos = QoS, dup = Dup, retain = Retain, packet_id = Packe
                                                  properties = Props},
                  payload  = Payload}.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Socket Connect/Send
 
 sock_connect(Hosts, SockOpts, Timeout) ->
@@ -1191,8 +1211,8 @@ send(Msg, State) when is_record(Msg, mqtt_msg) ->
 
 send(Packet, State = #state{socket = Sock, proto_ver = Ver})
     when is_record(Packet, mqtt_packet) ->
-    Data = emqx_frame:serialize(Packet, #{version => Ver}),
-    ?LOG(debug, "[Client] SEND Data: ~1000p", [Packet]),
+    Data = emqx_frame:serialize(Packet, Ver),
+    ?LOG(debug, "SEND Data: ~1000p", [Packet]),
     case emqx_client_sock:send(Sock, Data) of
         ok  -> {ok, bump_last_packet_id(State)};
         Error -> Error
@@ -1201,7 +1221,7 @@ send(Packet, State = #state{socket = Sock, proto_ver = Ver})
 run_sock(State = #state{socket = Sock}) ->
     emqx_client_sock:setopts(Sock, [{active, once}]), State.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Process incomming
 
 process_incoming(<<>>, Packets, State) ->
@@ -1209,10 +1229,10 @@ process_incoming(<<>>, Packets, State) ->
 
 process_incoming(Bytes, Packets, State = #state{parse_state = ParseState}) ->
     try emqx_frame:parse(Bytes, ParseState) of
-        {ok, Packet, Rest} ->
-            process_incoming(Rest, [Packet|Packets], init_parse_state(State));
-        {more, NewParseState} ->
-            {keep_state, State#state{parse_state = NewParseState}, next_events(Packets)};
+        {ok, Packet, Rest, NParseState} ->
+            process_incoming(Rest, [Packet|Packets], State#state{parse_state = NParseState});
+        {ok, NParseState} ->
+            {keep_state, State#state{parse_state = NParseState}, next_events(Packets)};
         {error, Reason} ->
             {stop, Reason}
     catch
@@ -1227,7 +1247,7 @@ next_events([Packet]) ->
 next_events(Packets) ->
     [{next_event, cast, Packet} || Packet <- lists:reverse(Packets)].
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% packet_id generation
 
 bump_last_packet_id(State = #state{last_packet_id = Id}) ->

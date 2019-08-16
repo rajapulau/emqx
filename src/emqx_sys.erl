@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_sys).
 
@@ -19,6 +21,8 @@
 -include("emqx.hrl").
 -include("logger.hrl").
 
+-logger_header("[SYS]").
+
 -export([start_link/0]).
 
 -export([ version/0
@@ -26,6 +30,7 @@
         , datetime/0
         , sysdescr/0
         , sys_interval/0
+        , sys_heatbeat_interval/0
         ]).
 
 -export([info/0]).
@@ -90,6 +95,11 @@ datetime() ->
 sys_interval() ->
     application:get_env(?APP, broker_sys_interval, 60000).
 
+%% @doc Get sys heatbeat interval
+-spec(sys_heatbeat_interval() -> pos_integer()).
+sys_heatbeat_interval() ->
+    application:get_env(?APP, broker_sys_heartbeat, 30000).
+
 %% @doc Get sys info
 -spec(info() -> list(tuple())).
 info() ->
@@ -109,7 +119,7 @@ init([]) ->
     {ok, heartbeat(tick(State))}.
 
 heartbeat(State) ->
-    State#state{heartbeat = start_timer(timer:seconds(1), heartbeat)}.
+    State#state{heartbeat = start_timer(sys_heatbeat_interval(), heartbeat)}.
 tick(State) ->
     State#state{ticker = start_timer(sys_interval(), tick)}.
 
@@ -117,11 +127,11 @@ handle_call(uptime, _From, State) ->
     {reply, uptime(State), State};
 
 handle_call(Req, _From, State) ->
-    ?LOG(error, "[SYS] Unexpected call: ~p", [Req]),
+    ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast(Msg, State) ->
-    ?LOG(error, "[SYS] Unexpected cast: ~p", [Msg]),
+    ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({timeout, TRef, heartbeat}, State = #state{heartbeat = TRef}) ->
@@ -138,7 +148,7 @@ handle_info({timeout, TRef, tick}, State = #state{ticker = TRef, version = Versi
     {noreply, tick(State), hibernate};
 
 handle_info(Info, State) ->
-    ?LOG(error, "[SYS] Unexpected info: ~p", [Info]),
+    ?LOG(error, "Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #state{heartbeat = TRef1, ticker = TRef2}) ->
@@ -184,8 +194,11 @@ publish(stats, Stats) ->
     [safe_publish(systop(lists:concat(['stats/', Stat])), integer_to_binary(Val))
      || {Stat, Val} <- Stats, is_atom(Stat), is_integer(Val)];
 publish(metrics, Metrics) ->
-    [safe_publish(systop(lists:concat(['metrics/', Metric])), integer_to_binary(Val))
-     || {Metric, Val} <- Metrics, is_atom(Metric), is_integer(Val)].
+    [safe_publish(systop(metric_topic(Name)), integer_to_binary(Val))
+     || {Name, Val} <- Metrics, is_atom(Name), is_integer(Val)].
+
+metric_topic(Name) ->
+    lists:concat(["metrics/", string:replace(atom_to_list(Name), ".", "/", all)]).
 
 safe_publish(Topic, Payload) ->
     safe_publish(Topic, #{}, Payload).

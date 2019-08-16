@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_pool).
 
@@ -18,6 +20,8 @@
 
 -include("logger.hrl").
 -include("types.hrl").
+
+-logger_header("[Pool]").
 
 %% APIs
 -export([start_link/2]).
@@ -45,9 +49,9 @@
 
 -type(task() :: fun() | mfa() | {fun(), Args :: list(any())}).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% APIs
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 %% @doc Start pool.
 -spec(start_link(atom(), pos_integer()) -> startlink_ret()).
@@ -85,9 +89,9 @@ cast(Msg) ->
 worker() ->
     gproc_pool:pick_worker(?POOL).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% gen_server callbacks
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 init([Pool, Id]) ->
     true = gproc_pool:connect_worker(Pool, {Pool, Id}),
@@ -97,22 +101,22 @@ handle_call({submit, Task}, _From, State) ->
     {reply, catch run(Task), State};
 
 handle_call(Req, _From, State) ->
-    ?LOG(error, "[Pool] Unexpected call: ~p", [Req]),
+    ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast({async_submit, Task}, State) ->
     try run(Task)
     catch _:Error:Stacktrace ->
-        ?LOG(error, "[Pool] Error: ~p, ~p", [Error, Stacktrace])
+        ?LOG(error, "Error: ~p, ~p", [Error, Stacktrace])
     end,
     {noreply, State};
 
 handle_cast(Msg, State) ->
-    ?LOG(error, "[Pool] Unexpected cast: ~p", [Msg]),
+    ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info(Info, State) ->
-    ?LOG(error, "[Pool] Unexpected info: ~p", [Info]),
+    ?LOG(error, "Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, #{pool := Pool, id := Id}) ->
@@ -121,9 +125,9 @@ terminate(_Reason, #{pool := Pool, id := Id}) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Internal functions
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 run({M, F, A}) ->
     erlang:apply(M, F, A);

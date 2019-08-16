@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -ifndef(EMQ_X_MQTT_HRL).
 -define(EMQ_X_MQTT_HRL, true).
@@ -202,8 +204,7 @@
 -define(DEFAULT_SUBOPTS, #{rh  => 0, %% Retain Handling
                            rap => 0, %% Retain as Publish
                            nl  => 0, %% No Local
-                           qos => 0, %% QoS
-                           rc  => 0  %% Reason Code
+                           qos => 0  %% QoS
                           }).
 
 -record(mqtt_packet_connect, {
@@ -347,6 +348,13 @@
     #mqtt_packet{header   = #mqtt_packet_header{type = ?PUBLISH,
                                                 qos  = QoS},
                  variable = #mqtt_packet_publish{packet_id = PacketId}
+                }).
+
+-define(PUBLISH_PACKET(QoS, Topic, PacketId),
+    #mqtt_packet{header   = #mqtt_packet_header{type = ?PUBLISH,
+                                                qos  = QoS},
+                 variable = #mqtt_packet_publish{topic_name = Topic,
+                                                 packet_id  = PacketId}
                 }).
 
 -define(PUBLISH_PACKET(QoS, Topic, PacketId, Payload),

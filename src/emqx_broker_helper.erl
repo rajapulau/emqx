@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_broker_helper).
 
@@ -18,6 +20,8 @@
 
 -include("logger.hrl").
 -include("types.hrl").
+
+-logger_header("[Broker Helper]").
 
 -export([start_link/0]).
 
@@ -90,9 +94,9 @@ create_seq(Topic) ->
 reclaim_seq(Topic) ->
     emqx_sequence:reclaim(?SUBSEQ, Topic).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% gen_server callbacks
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 init([]) ->
     %% Helper table
@@ -110,7 +114,7 @@ init([]) ->
     {ok, #{pmon => emqx_pmon:new()}}.
 
 handle_call(Req, _From, State) ->
-    ?LOG(error, "[Broker Helper] Unexpected call: ~p", [Req]),
+    ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
 handle_cast({register_sub, SubPid, SubId}, State = #{pmon := PMon}) ->
@@ -119,7 +123,7 @@ handle_cast({register_sub, SubPid, SubId}, State = #{pmon := PMon}) ->
     {noreply, State#{pmon := emqx_pmon:monitor(SubPid, PMon)}};
 
 handle_cast(Msg, State) ->
-    ?LOG(error, "[Broker Helper] Unexpected cast: ~p", [Msg]),
+    ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({'DOWN', _MRef, process, SubPid, _Reason}, State = #{pmon := PMon}) ->
@@ -130,7 +134,7 @@ handle_info({'DOWN', _MRef, process, SubPid, _Reason}, State = #{pmon := PMon}) 
     {noreply, State#{pmon := PMon1}};
 
 handle_info(Info, State) ->
-    ?LOG(error, "[Broker Helper] Unexpected info: ~p", [Info]),
+    ?LOG(error, "Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -140,9 +144,9 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Internal functions
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 clean_down(SubPid) ->
     case ets:lookup(?SUBMON, SubPid) of

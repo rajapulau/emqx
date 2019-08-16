@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_alarm_handler).
 
@@ -18,6 +20,8 @@
 
 -include("emqx.hrl").
 -include("logger.hrl").
+
+-logger_header("[Alarm Handler]").
 
 %% Mnesia bootstrap
 -export([mnesia/1]).
@@ -36,17 +40,18 @@
 -export([ load/0
         , unload/0
         , get_alarms/0
+        , get_alarms/1
         ]).
 
 -record(common_alarm, {id, desc}).
--record(alarm_history, {id, clear_at}).
+-record(alarm_history, {id, desc, clear_at}).
 
 -define(ALARM_TAB, emqx_alarm).
 -define(ALARM_HISTORY_TAB, emqx_alarm_history).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Mnesia bootstrap
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 mnesia(boot) ->
     ok = ekka_mnesia:create_table(?ALARM_TAB, [
@@ -61,13 +66,14 @@ mnesia(boot) ->
                 {local_content, true},
                 {record_name, alarm_history},
                 {attributes, record_info(fields, alarm_history)}]);
+
 mnesia(copy) ->
     ok = ekka_mnesia:copy_table(?ALARM_TAB),
     ok = ekka_mnesia:copy_table(?ALARM_HISTORY_TAB).
 
-%%----------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% API
-%%----------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 load() ->
     gen_event:swap_handler(alarm_handler, {alarm_handler, swap}, {?MODULE, []}).
@@ -77,15 +83,23 @@ unload() ->
     gen_event:swap_handler(alarm_handler, {?MODULE, swap}, {alarm_handler, []}).
 
 get_alarms() ->
-    gen_event:call(alarm_handler, ?MODULE, get_alarms).
+    get_alarms(present).
 
-%%----------------------------------------------------------------------
+get_alarms(present) ->
+    Alarms = ets:tab2list(?ALARM_TAB),
+    [{Id, Desc} || #common_alarm{id = Id, desc = Desc} <- Alarms];
+get_alarms(history) ->
+    Alarms = ets:tab2list(?ALARM_HISTORY_TAB),
+    [{Id, Desc, ClearAt} || #alarm_history{id = Id, desc = Desc, clear_at = ClearAt} <- Alarms].
+
+%%--------------------------------------------------------------------
 %% gen_event callbacks
-%%----------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 init({_Args, {alarm_handler, ExistingAlarms}}) ->
     init_tables(ExistingAlarms),
     {ok, []};
+
 init(_) ->
     init_tables([]),
     {ok, []}.
@@ -93,31 +107,36 @@ init(_) ->
 handle_event({set_alarm, {AlarmId, AlarmDesc = #alarm{timestamp = undefined}}}, State) ->
     handle_event({set_alarm, {AlarmId, AlarmDesc#alarm{timestamp = os:timestamp()}}}, State);
 handle_event({set_alarm, Alarm = {AlarmId, AlarmDesc}}, State) ->
-    ?LOG(warning, "[Alarm Handler] ~p set", [Alarm]),
+    ?LOG(warning, "New Alarm: ~p, Alarm Info: ~p", [AlarmId, AlarmDesc]),
     case encode_alarm(Alarm) of
         {ok, Json} ->
-            emqx_broker:safe_publish(alarm_msg(topic(alert, maybe_to_binary(AlarmId)), Json));
+            emqx_broker:safe_publish(alarm_msg(topic(alert), Json));
         {error, Reason} ->
-            ?LOG(error, "[Alarm Handler] Failed to encode alarm: ~p", [Reason])
+            ?LOG(error, "Failed to encode alarm: ~p", [Reason])
     end,
     set_alarm_(AlarmId, AlarmDesc),
     {ok, State};
 handle_event({clear_alarm, AlarmId}, State) ->
-    ?LOG(notice, "[Alarm Handler] ~p clear", [AlarmId]),
-    emqx_broker:safe_publish(alarm_msg(topic(clear, maybe_to_binary(AlarmId)), <<"">>)),
+    ?LOG(info, "Clear Alarm: ~p", [AlarmId]),
+    case encode_alarm({AlarmId, undefined}) of
+        {ok, Json} ->
+            emqx_broker:safe_publish(alarm_msg(topic(clear), Json));
+        {error, Reason} ->
+            ?LOG(error, "Failed to encode alarm: ~p", [Reason])
+    end,
     clear_alarm_(AlarmId),
     {ok, State};
 handle_event(_, State) ->
     {ok, State}.
 
-handle_info(_, State) -> {ok, State}.
+handle_info(_, State) ->
+    {ok, State}.
 
-handle_call(get_alarms, State) ->
-    {ok, get_alarms_(), State};
-handle_call(_Query, State)     -> {ok, {error, bad_query}, State}.
+handle_call(_Query, State) ->
+    {ok, {error, bad_query}, State}.
 
 terminate(swap, _State) ->
-    {emqx_alarm_handler, get_alarms_()};
+    {emqx_alarm_handler, get_alarms()};
 terminate(_, _) ->
     ok.
 
@@ -127,21 +146,23 @@ terminate(_, _) ->
 
 init_tables(ExistingAlarms) ->
     mnesia:clear_table(?ALARM_TAB),
-    lists:foreach(fun({Id, _Desc}) ->
-                      set_alarm_history(Id)
+    lists:foreach(fun({Id, Desc}) ->
+                      set_alarm_history(Id, Desc)
                   end, ExistingAlarms).
 
-encode_alarm({AlarmId, #alarm{severity  = Severity, 
+encode_alarm({AlarmId, #alarm{severity  = Severity,
                               title     = Title,
-                              summary   = Summary, 
+                              summary   = Summary,
                               timestamp = Ts}}) ->
     emqx_json:safe_encode([{id, maybe_to_binary(AlarmId)},
                            {desc, [{severity, Severity},
                                    {title, iolist_to_binary(Title)},
                                    {summary, iolist_to_binary(Summary)},
-                                   {ts, emqx_time:now_secs(Ts)}]}]);
+                                   {timestamp, emqx_time:now_ms(Ts)}]}]);
+encode_alarm({AlarmId, undefined}) ->
+    emqx_json:safe_encode([{id, maybe_to_binary(AlarmId)}]);
 encode_alarm({AlarmId, AlarmDesc}) ->
-    emqx_json:safe_encode([{id, maybe_to_binary(AlarmId)}, 
+    emqx_json:safe_encode([{id, maybe_to_binary(AlarmId)},
                            {desc, maybe_to_binary(AlarmDesc)}]).
 
 alarm_msg(Topic, Payload) ->
@@ -149,10 +170,10 @@ alarm_msg(Topic, Payload) ->
     emqx_message:set_headers(#{'Content-Type' => <<"application/json">>},
                              emqx_message:set_flag(sys, Msg)).
 
-topic(alert, AlarmId) ->
-    emqx_topic:systop(<<"alarms/", AlarmId/binary, "/alert">>);
-topic(clear, AlarmId) ->
-    emqx_topic:systop(<<"alarms/", AlarmId/binary, "/clear">>).
+topic(alert) ->
+    emqx_topic:systop(<<"alarms/alert">>);
+topic(clear) ->
+    emqx_topic:systop(<<"alarms/clear">>).
 
 maybe_to_binary(Data) when is_binary(Data) ->
     Data;
@@ -163,14 +184,15 @@ set_alarm_(Id, Desc) ->
     mnesia:dirty_write(?ALARM_TAB, #common_alarm{id = Id, desc = Desc}).
 
 clear_alarm_(Id) ->
-    mnesia:dirty_delete(?ALARM_TAB, Id),
-    set_alarm_history(Id).
+    case mnesia:dirty_read(?ALARM_TAB, Id) of
+        [#common_alarm{desc = Desc}] ->
+            set_alarm_history(Id, Desc),
+            mnesia:dirty_delete(?ALARM_TAB, Id);
+        [] -> ok
+    end.
 
-get_alarms_() ->
-    Alarms = ets:tab2list(?ALARM_TAB),
-    [{Id, Desc} || #common_alarm{id = Id, desc = Desc} <- Alarms].
-
-set_alarm_history(Id) ->
-    mnesia:dirty_write(?ALARM_HISTORY_TAB, #alarm_history{id = Id,
-                                                          clear_at = undefined}).
-
+set_alarm_history(Id, Desc) ->
+    His = #alarm_history{id = Id,
+                         desc = Desc,
+                         clear_at = os:timestamp()},
+    mnesia:dirty_write(?ALARM_HISTORY_TAB, His).
