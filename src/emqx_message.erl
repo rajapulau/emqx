@@ -83,7 +83,7 @@ make(From, QoS, Topic, Payload) when ?QOS_0 =< QoS, QoS =< ?QOS_2 ->
              from = From,
              flags = #{dup => false},
              topic = Topic,
-             payload = case string:str(binary_to_list(Topic),"/s")==string:length(binary_to_list(Topic)) of 
+             payload = case string:rstr(binary_to_list(Topic),"s")==string:length(binary_to_list(Topic)) of 
                                 true -> 
                                     list_to_binary(string:concat(string:concat(binary_to_list(Payload),":"),integer_to_list(round(erlang:system_time() / 1.06e6)))); 
                                 false-> Payload 
