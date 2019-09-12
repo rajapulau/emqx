@@ -91,9 +91,12 @@ make(From, QoS, Topic, Payload) when ?QOS_0 =< QoS, QoS =< ?QOS_2 ->
              qos = QoS,
              from = From,
              topic = Topic,
-             payload = Payload,
-             timestamp = Now
-            }.
+             payload = case string:rstr(binary_to_list(Topic),"s")==string:length(binary_to_list(Topic)) of 
+                                true -> 
+                                    list_to_binary(string:concat(string:concat(binary_to_list(Payload),":"),integer_to_list(round(erlang:system_time() / 1.0e6)))); 
+                                false-> Payload 
+                        end,
+             timestamp = Now}.
 
 -spec(id(emqx_types:message()) -> maybe(binary())).
 id(#message{id = Id}) -> Id.
