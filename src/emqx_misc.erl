@@ -16,20 +16,24 @@
 
 -module(emqx_misc).
 
+-include("types.hrl").
+
 -export([ merge_opts/2
+        , maybe_apply/2
+        , run_fold/2
+        , run_fold/3
+        , pipeline/3
         , start_timer/2
         , start_timer/3
         , cancel_timer/1
         , proc_name/2
         , proc_stats/0
         , proc_stats/1
+        , index_of/2
         ]).
 
--export([ init_proc_mng_policy/1
-        , conn_proc_mng_policy/1
-        ]).
-
--export([ drain_deliver/1
+-export([ drain_deliver/0
+        , drain_deliver/1
         , drain_down/1
         ]).
 
@@ -39,7 +43,7 @@
           ]}).
 
 %% @doc Merge options
--spec(merge_opts(list(), list()) -> list()).
+-spec(merge_opts(Opts, Opts) -> Opts when Opts :: proplists:proplist()).
 merge_opts(Defaults, Options) ->
     lists:foldl(
       fun({Opt, Val}, Acc) ->
@@ -47,6 +51,42 @@ merge_opts(Defaults, Options) ->
          (Opt, Acc) ->
           lists:usort([Opt | Acc])
       end, Defaults, Options).
+
+%% @doc Apply a function to a maybe argument.
+-spec(maybe_apply(fun((maybe(A)) -> maybe(A)), maybe(A))
+      -> maybe(A) when A :: any()).
+maybe_apply(_Fun, undefined) ->
+    undefined;
+maybe_apply(Fun, Arg) when is_function(Fun) ->
+    erlang:apply(Fun, [Arg]).
+
+run_fold([], Acc) ->
+    Acc;
+run_fold([Fun|More], Acc) ->
+    run_fold(More, Fun(Acc)).
+
+%% @doc RunFold
+run_fold([], Acc, _State) ->
+    Acc;
+run_fold([Fun|More], Acc, State) ->
+    run_fold(More, Fun(Acc, State), State).
+
+%% @doc Pipeline
+pipeline([], Input, State) ->
+    {ok, Input, State};
+
+pipeline([Fun|More], Input, State) ->
+    case Fun(Input, State) of
+        ok -> pipeline(More, Input, State);
+        {ok, NState} ->
+            pipeline(More, Input, NState);
+        {ok, NInput, NState} ->
+            pipeline(More, NInput, NState);
+        {error, Reason} ->
+            {error, Reason, State};
+        {error, Reason, NState} ->
+            {error, Reason, NState}
+    end.
 
 -spec(start_timer(integer(), term()) -> reference()).
 start_timer(Interval, Msg) ->
@@ -56,7 +96,7 @@ start_timer(Interval, Msg) ->
 start_timer(Interval, Dest, Msg) ->
     erlang:start_timer(Interval, Dest, Msg).
 
--spec(cancel_timer(undefined | reference()) -> ok).
+-spec(cancel_timer(maybe(reference())) -> ok).
 cancel_timer(Timer) when is_reference(Timer) ->
     case erlang:cancel_timer(Timer) of
         false ->
@@ -82,57 +122,10 @@ proc_stats(Pid) ->
             [{mailbox_len, Len}|Stats]
     end.
 
--define(DISABLED, 0).
-
-init_proc_mng_policy(undefined) -> ok;
-init_proc_mng_policy(Zone) ->
-    #{max_heap_size := MaxHeapSizeInBytes}
-        = ShutdownPolicy
-        = emqx_zone:get_env(Zone, force_shutdown_policy),
-    MaxHeapSize = MaxHeapSizeInBytes div erlang:system_info(wordsize),
-    _ = erlang:process_flag(max_heap_size, MaxHeapSize), % zero is discarded
-    erlang:put(force_shutdown_policy, ShutdownPolicy),
-    ok.
-
-%% @doc Check self() process status against connection/session process management policy,
-%% return `continue | hibernate | {shutdown, Reason}' accordingly.
-%% `continue': There is nothing out of the ordinary.
-%% `hibernate': Nothing to process in my mailbox, and since this check is triggered
-%%              by a timer, we assume it is a fat chance to continue idel, hence hibernate.
-%% `shutdown': Some numbers (message queue length hit the limit),
-%%             hence shutdown for greater good (system stability).
--spec(conn_proc_mng_policy(#{message_queue_len => integer()} | false) ->
-            continue | hibernate | {shutdown, _}).
-conn_proc_mng_policy(#{message_queue_len := MaxMsgQueueLen}) ->
-    Qlength = proc_info(message_queue_len),
-    Checks =
-        [{fun() -> is_message_queue_too_long(Qlength, MaxMsgQueueLen) end,
-          {shutdown, message_queue_too_long}},
-         {fun() -> Qlength > 0 end, continue},
-         {fun() -> true end, hibernate}
-        ],
-    check(Checks);
-conn_proc_mng_policy(_) ->
-    %% disable by default
-    conn_proc_mng_policy(#{message_queue_len => 0}).
-
-check([{Pred, Result} | Rest]) ->
-    case Pred() of
-        true -> Result;
-        false -> check(Rest)
-    end.
-
-is_message_queue_too_long(Qlength, Max) ->
-    is_enabled(Max) andalso Qlength > Max.
-
-is_enabled(Max) ->
-    is_integer(Max) andalso Max > ?DISABLED.
-
-proc_info(Key) ->
-    {Key, Value} = erlang:process_info(self(), Key),
-    Value.
-
 %% @doc Drain delivers from the channel's mailbox.
+drain_deliver() ->
+    drain_deliver([]).
+
 drain_deliver(Acc) ->
     receive
         Deliver = {deliver, _Topic, _Msg} ->
@@ -155,4 +148,15 @@ drain_down(Cnt, Acc) ->
     after 0 ->
         drain_down(0, Acc)
     end.
+
+%% lists:index_of/2
+index_of(E, L) ->
+    index_of(E, 1, L).
+
+index_of(_E, _I, []) ->
+    error(badarg);
+index_of(E, I, [E|_]) ->
+    I;
+index_of(E, I, [_|L]) ->
+    index_of(E, I+1, L).
 

@@ -42,7 +42,7 @@
 %% @doc Start all listeners.
 -spec(start() -> ok).
 start() ->
-    lists:foreach(fun start_listener/1, emqx_config:get_env(listeners, [])).
+    lists:foreach(fun start_listener/1, emqx:get_env(listeners, [])).
 
 -spec(start_listener(listener()) -> {ok, pid()} | {error, term()}).
 start_listener({Proto, ListenOn, Options}) ->
@@ -79,7 +79,7 @@ start_listener(Proto, ListenOn, Options) when Proto == https; Proto == wss ->
 start_mqtt_listener(Name, ListenOn, Options) ->
     SockOpts = esockd:parse_opt(Options),
     esockd:open(Name, ListenOn, merge_default(SockOpts),
-                {emqx_channel, start_link, [Options -- SockOpts]}).
+                {emqx_connection, start_link, [Options -- SockOpts]}).
 
 start_http_listener(Start, Name, ListenOn, RanchOpts, ProtoOpts) ->
     Start(Name, with_port(ListenOn, RanchOpts), ProtoOpts).
@@ -88,7 +88,7 @@ mqtt_path(Options) ->
     proplists:get_value(mqtt_path, Options, "/mqtt").
 
 ws_opts(Options) ->
-    WsPaths = [{mqtt_path(Options), emqx_ws_channel, Options}],
+    WsPaths = [{mqtt_path(Options), emqx_ws_connection, Options}],
     Dispatch = cowboy_router:compile([{'_', WsPaths}]),
     ProxyProto = proplists:get_value(proxy_protocol, Options, false),
     #{env => #{dispatch => Dispatch}, proxy_header => ProxyProto}.
@@ -113,7 +113,7 @@ with_port({Addr, Port}, Opts = #{socket_opts := SocketOption}) ->
 %% @doc Restart all listeners
 -spec(restart() -> ok).
 restart() ->
-    lists:foreach(fun restart_listener/1, emqx_config:get_env(listeners, [])).
+    lists:foreach(fun restart_listener/1, emqx:get_env(listeners, [])).
 
 -spec(restart_listener(listener()) -> any()).
 restart_listener({Proto, ListenOn, Options}) ->
@@ -136,7 +136,7 @@ restart_listener(Proto, ListenOn, _Opts) ->
 %% @doc Stop all listeners.
 -spec(stop() -> ok).
 stop() ->
-    lists:foreach(fun stop_listener/1, emqx_config:get_env(listeners, [])).
+    lists:foreach(fun stop_listener/1, emqx:get_env(listeners, [])).
 
 -spec(stop_listener(listener()) -> ok | {error, term()}).
 stop_listener({Proto, ListenOn, Opts}) ->

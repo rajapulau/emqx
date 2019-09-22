@@ -14,27 +14,4 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
--module(emqx_cli).
-
--export([ print/1
-        , print/2
-        , usage/1
-        , usage/2
-        ]).
-
-print(Msg) ->
-    io:format(Msg), lists:flatten(io_lib:format("~p", [Msg])).
-
-print(Format, Args) ->
-    io:format(Format, Args), lists:flatten(io_lib:format(Format, Args)).
-
-usage(CmdList) ->
-    lists:map(
-      fun({Cmd, Descr}) ->
-          io:format("~-48s# ~s~n", [Cmd, Descr]),
-          lists:flatten(io_lib:format("~-48s# ~s~n", [Cmd, Descr]))
-      end, CmdList).
-
-usage(Format, Args) ->
-    usage([{Format, Args}]).
-
+-module(emqx_ctl_SUTIES).

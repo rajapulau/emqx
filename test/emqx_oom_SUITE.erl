@@ -14,32 +14,31 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
--module(emqx_net_SUITE).
+-module(emqx_oom_SUITE).
 
-%% CT
 -compile(export_all).
 -compile(nowarn_export_all).
 
-all() -> [{group, keepalive}].
+-include_lib("eunit/include/eunit.hrl").
 
-groups() -> [{keepalive, [], [t_keepalive]}].
+all() -> emqx_ct:all(?MODULE).
 
-%%--------------------------------------------------------------------
-%% Keepalive
-%%--------------------------------------------------------------------
+t_init(_) ->
+    Opts = #{message_queue_len => 10,
+             max_heap_size => 1024*1024*8
+            },
+    Oom = emqx_oom:init(Opts),
+    ?assertEqual(#{message_queue_len => 10,
+                   max_heap_size => 1024*1024
+                  }, emqx_oom:info(Oom)).
 
-t_keepalive(_) ->
-    {ok, KA} = emqx_keepalive:start(fun() -> {ok, 1} end, 1, {keepalive, timeout}),
-    [resumed, timeout] = lists:reverse(keepalive_recv(KA, [])).
-
-keepalive_recv(KA, Acc) ->
-    receive
-        {keepalive, timeout} ->
-            case emqx_keepalive:check(KA) of
-                {ok, KA1} -> keepalive_recv(KA1, [resumed | Acc]);
-                {error, timeout} -> [timeout | Acc]
-            end
-        after 4000 ->
-                Acc
-    end.
+t_check(_) ->
+    Opts = #{message_queue_len => 10,
+             max_heap_size => 1024*1024*8
+            },
+    Oom = emqx_oom:init(Opts),
+    [self() ! {msg, I} || I <- lists:seq(1, 5)],
+    ?assertEqual(ok, emqx_oom:check(Oom)),
+    [self() ! {msg, I} || I <- lists:seq(1, 6)],
+    ?assertEqual({shutdown, message_queue_too_long}, emqx_oom:check(Oom)).
 
