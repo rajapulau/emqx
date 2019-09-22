@@ -14,4 +14,16 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
--module(emqx_ctl_SUTIES).
+-module(emqx_boot).
+
+-export([is_enabled/1]).
+
+-define(BOOT_MODULES, [router, broker, listeners]).
+
+-spec(is_enabled(all|list(router|broker|listeners)) -> boolean()).
+is_enabled(Mod) ->
+    (BootMods = boot_modules()) =:= all orelse lists:member(Mod, BootMods).
+
+boot_modules() ->
+    application:get_env(emqx, boot_modules, ?BOOT_MODULES).
+

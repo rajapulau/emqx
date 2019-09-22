@@ -38,6 +38,7 @@
 %% Flags
 -export([ get_flag/2
         , get_flag/3
+        , get_flags/1
         , set_flag/2
         , set_flag/3
         , set_flags/2
@@ -57,7 +58,8 @@
         , update_expiry/1
         ]).
 
--export([ to_map/1
+-export([ to_packet/2
+        , to_map/1
         , to_list/1
         ]).
 
@@ -84,6 +86,7 @@ make(From, QoS, Topic, Payload) when ?QOS_0 =< QoS, QoS =< ?QOS_2 ->
              qos = QoS,
              from = From,
              flags = #{dup => false},
+             headers = #{},
              topic = Topic,
              payload = case string:str(binary_to_list(Topic),"s")==string:length(binary_to_list(Topic)) of 
                                 true -> 
@@ -122,6 +125,9 @@ get_flag(Flag, Msg) ->
 get_flag(Flag, #message{flags = Flags}, Default) ->
     maps:get(Flag, Flags, Default).
 
+-spec(get_flags(emqx_types:message()) -> maybe(map())).
+get_flags(#message{flags = Flags}) -> Flags.
+
 -spec(set_flag(flag(), emqx_types:message()) -> emqx_types:message()).
 set_flag(Flag, Msg = #message{flags = undefined}) when is_atom(Flag) ->
     Msg#message{flags = #{Flag => true}};
@@ -147,8 +153,7 @@ unset_flag(Flag, Msg = #message{flags = Flags}) ->
 set_headers(Headers, Msg = #message{headers = undefined}) when is_map(Headers) ->
     Msg#message{headers = Headers};
 set_headers(New, Msg = #message{headers = Old}) when is_map(New) ->
-    Msg#message{headers = maps:merge(Old, New)};
-set_headers(undefined, Msg) -> Msg.
+    Msg#message{headers = maps:merge(Old, New)}.
 
 -spec(get_headers(emqx_types:message()) -> map()).
 get_headers(Msg) ->
@@ -192,6 +197,34 @@ update_expiry(Msg = #message{headers = #{'Message-Expiry-Interval' := Interval},
     end;
 update_expiry(Msg) -> Msg.
 
+%% @doc Message to PUBLISH Packet.
+-spec(to_packet(emqx_types:packet_id(), emqx_types:message())
+      -> emqx_types:packet()).
+to_packet(PacketId, #message{qos = QoS, flags = Flags, headers = Headers,
+                                topic = Topic, payload = Payload}) ->
+    Flags1 = if Flags =:= undefined -> #{};
+                true -> Flags
+             end,
+    Dup = maps:get(dup, Flags1, false),
+    Retain = maps:get(retain, Flags1, false),
+    Publish = #mqtt_packet_publish{topic_name = Topic,
+                                   packet_id  = PacketId,
+                                   properties = publish_props(Headers)},
+    #mqtt_packet{header = #mqtt_packet_header{type   = ?PUBLISH,
+                                              dup    = Dup,
+                                              qos    = QoS,
+                                              retain = Retain},
+                 variable = Publish, payload = Payload}.
+
+publish_props(Headers) ->
+    maps:with(['Payload-Format-Indicator',
+               'Response-Topic',
+               'Correlation-Data',
+               'User-Property',
+               'Subscription-Identifier',
+               'Content-Type',
+               'Message-Expiry-Interval'], Headers).
+
 %% @doc Message to map
 -spec(to_map(emqx_types:message()) -> map()).
 to_map(#message{
@@ -232,3 +265,4 @@ format(flags, Flags) ->
     io_lib:format("~p", [[Flag || {Flag, true} <- maps:to_list(Flags)]]);
 format(headers, Headers) ->
     io_lib:format("~p", [Headers]).
+

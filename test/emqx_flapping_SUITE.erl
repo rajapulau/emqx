@@ -22,34 +22,36 @@
 all() -> emqx_ct:all(?MODULE).
 
 init_per_suite(Config) ->
-    emqx_ct_helpers:start_apps([]),
-    prepare_for_test(),
+    emqx_ct_helpers:boot_modules(all),
+    emqx_ct_helpers:start_apps([], fun set_special_configs/1),
     Config.
 
+set_special_configs(emqx) ->
+    emqx_zone:set_env(external, enable_flapping_detect, true),
+    application:set_env(emqx, flapping_detect_policy,
+                        #{threshold => 3,
+                          duration => 100,
+                          banned_interval => 200
+                         });
+set_special_configs(_App) -> ok.
+
 end_per_suite(_Config) ->
-    emqx_ct_helpers:stop_apps([]).
+    emqx_ct_helpers:stop_apps([]),
+    ok.
 
-%% t_flapping(_Config) ->
-%%     process_flag(trap_exit, true),
-%%     flapping_connect(5),
-%%     {ok, C} = emqtt:start_link([{client_id, <<"Client">>}]),
-%%     {error, _} = emqtt:connect(C),
-%%     receive
-%%         {'EXIT', Client, _Reason} ->
-%%             ct:log("receive exit signal, Client: ~p", [Client])
-%%     after 1000 ->
-%%             ct:log("timeout")
-%%     end.
+t_detect_check(_) ->
+    ClientInfo = #{zone => external,
+                   client_id => <<"clientid">>,
+                   peerhost => {127,0,0,1}
+                  },
+    false = emqx_flapping:detect(ClientInfo),
+    false = emqx_flapping:check(ClientInfo),
+    false = emqx_flapping:detect(ClientInfo),
+    false = emqx_flapping:check(ClientInfo),
+    true = emqx_flapping:detect(ClientInfo),
+    timer:sleep(100),
+    true = emqx_flapping:check(ClientInfo),
+    timer:sleep(300),
+    false = emqx_flapping:check(ClientInfo),
+    ok = emqx_flapping:stop().
 
-flapping_connect(Times) ->
-    lists:foreach(fun do_connect/1, lists:seq(1, Times)).
-
-do_connect(_I) ->
-    {ok, C} = emqtt:start_link([{client_id, <<"Client">>}]),
-    {ok, _} = emqtt:connect(C),
-    ok = emqtt:disconnect(C).
-
-prepare_for_test() ->
-    ok = emqx_zone:set_env(external, enable_flapping_detect, true),
-    ok = emqx_zone:set_env(external, flapping_threshold, {10, 60}),
-    ok = emqx_zone:set_env(external, flapping_expiry_interval, 3600).

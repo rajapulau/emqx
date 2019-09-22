@@ -17,10 +17,10 @@
 -module(emqx_misc).
 
 -include("types.hrl").
+-include("logger.hrl").
 
 -export([ merge_opts/2
         , maybe_apply/2
-        , run_fold/2
         , run_fold/3
         , pipeline/3
         , start_timer/2
@@ -60,11 +60,6 @@ maybe_apply(_Fun, undefined) ->
 maybe_apply(Fun, Arg) when is_function(Fun) ->
     erlang:apply(Fun, [Arg]).
 
-run_fold([], Acc) ->
-    Acc;
-run_fold([Fun|More], Acc) ->
-    run_fold(More, Fun(Acc)).
-
 %% @doc RunFold
 run_fold([], Acc, _State) ->
     Acc;
@@ -76,16 +71,28 @@ pipeline([], Input, State) ->
     {ok, Input, State};
 
 pipeline([Fun|More], Input, State) ->
-    case Fun(Input, State) of
+    try apply_fun(Fun, Input, State) of
         ok -> pipeline(More, Input, State);
         {ok, NState} ->
             pipeline(More, Input, NState);
-        {ok, NInput, NState} ->
-            pipeline(More, NInput, NState);
+        {ok, Output, NState} ->
+            pipeline(More, Output, NState);
         {error, Reason} ->
             {error, Reason, State};
         {error, Reason, NState} ->
             {error, Reason, NState}
+    catch
+        Error:Reason:Stacktrace ->
+            ?LOG(error, "pipeline ~p failed: ~p,\nstacktrace: ~0p",
+                [{Fun, Input, State}, {Error, Reason}, Stacktrace]),
+            {error, Reason, State}
+    end.
+
+-compile({inline, [apply_fun/3]}).
+apply_fun(Fun, Input, State) ->
+    case erlang:fun_info(Fun, arity) of
+        {arity, 1} -> Fun(Input);
+        {arity, 2} -> Fun(Input, State)
     end.
 
 -spec(start_timer(integer(), term()) -> reference()).

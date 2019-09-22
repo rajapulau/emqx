@@ -28,6 +28,10 @@
 %% For tests
 -export([all/0]).
 
+-export([ set/3
+        , get/3
+        ]).
+
 -type(prop_name() :: atom()).
 -type(prop_id() :: pos_integer()).
 
@@ -178,4 +182,14 @@ validate_value(_Type, _Val) -> false.
 
 -spec(all() -> map()).
 all() -> ?PROPS_TABLE.
+
+set(Name, Value, undefined) ->
+    #{Name => Value};
+set(Name, Value, Props) ->
+    Props#{Name => Value}.
+
+get(_Name, undefined, Default) ->
+    Default;
+get(Name, Props, Default) ->
+    maps:get(Name, Props, Default).
 
