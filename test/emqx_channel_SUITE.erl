@@ -19,56 +19,292 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx_mqtt.hrl").
+-import(emqx_channel,
+        [ handle_in/2
+        , handle_out/2
+        ]).
 
+-include("emqx.hrl").
+-include("emqx_mqtt.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--include_lib("common_test/include/ct.hrl").
-
-all() ->
-    [t_connect_api].
+all() -> emqx_ct:all(?MODULE).
 
 init_per_suite(Config) ->
+    emqx_ct_helpers:boot_modules([router, broker]),
     emqx_ct_helpers:start_apps([]),
     Config.
 
 end_per_suite(_Config) ->
     emqx_ct_helpers:stop_apps([]).
 
-t_connect_api(_Config) ->
-    {ok, T1} = emqx_client:start_link([{host, "localhost"},
-                                       {client_id, <<"client1">>},
-                                       {username, <<"testuser1">>},
-                                       {password, <<"pass1">>}]),
-    {ok, _} = emqx_client:connect(T1),
-    CPid = emqx_cm:lookup_conn_pid(<<"client1">>),
-    ConnStats = emqx_channel:stats(CPid),
-    ok = t_stats(ConnStats),
-    ConnAttrs = emqx_channel:attrs(CPid),
-    ok = t_attrs(ConnAttrs),
-    ConnInfo = emqx_channel:info(CPid),
-    ok = t_info(ConnInfo),
-    SessionPid = emqx_channel:session(CPid),
-    true = is_pid(SessionPid),
-    emqx_client:disconnect(T1).
+%%--------------------------------------------------------------------
+%% Test cases for handle_in
+%%--------------------------------------------------------------------
 
-t_info(ConnInfo) ->
-    ?assertEqual(tcp, maps:get(socktype, ConnInfo)),
-    ?assertEqual(running, maps:get(conn_state, ConnInfo)),
-    ?assertEqual(<<"client1">>, maps:get(client_id, ConnInfo)),
-    ?assertEqual(<<"testuser1">>, maps:get(username, ConnInfo)),
-    ?assertEqual(<<"MQTT">>, maps:get(proto_name, ConnInfo)).
+t_handle_connect(_) ->
+    ConnPkt = #mqtt_packet_connect{
+                 proto_name  = <<"MQTT">>,
+                 proto_ver   = ?MQTT_PROTO_V4,
+                 is_bridge   = false,
+                 clean_start = true,
+                 keepalive   = 30,
+                 properties  = #{},
+                 client_id   = <<"clientid">>,
+                 username    = <<"username">>,
+                 password    = <<"passwd">>
+                },
+    with_channel(
+      fun(Channel) ->
+              {ok, ?CONNACK_PACKET(?RC_SUCCESS), Channel1}
+                = handle_in(?CONNECT_PACKET(ConnPkt), Channel),
+              #{client_id := ClientId, username := Username}
+                = emqx_channel:info(client, Channel1),
+              ?assertEqual(<<"clientid">>, ClientId),
+              ?assertEqual(<<"username">>, Username)
+      end).
 
-t_attrs(AttrsData) ->
-    ?assertEqual(<<"client1">>, maps:get(client_id, AttrsData)),
-    ?assertEqual(emqx_channel, maps:get(conn_mod, AttrsData)),
-    ?assertEqual(<<"testuser1">>, maps:get(username, AttrsData)).
+t_handle_publish_qos0(_) ->
+    with_channel(
+      fun(Channel) ->
+              Publish = ?PUBLISH_PACKET(?QOS_0, <<"topic">>, undefined, <<"payload">>),
+              {ok, Channel} = handle_in(Publish, Channel)
+      end).
 
-t_stats(StatsData) ->
-    ?assertEqual(true, proplists:get_value(recv_oct, StatsData) >= 0),
-    ?assertEqual(true, proplists:get_value(mailbox_len, StatsData) >= 0),
-    ?assertEqual(true, proplists:get_value(heap_size, StatsData) >= 0),
-    ?assertEqual(true, proplists:get_value(reductions, StatsData) >=0),
-    ?assertEqual(true, proplists:get_value(recv_pkt, StatsData) =:=1),
-    ?assertEqual(true, proplists:get_value(recv_msg, StatsData) >=0),
-    ?assertEqual(true, proplists:get_value(send_pkt, StatsData) =:=1).
+t_handle_publish_qos1(_) ->
+    with_channel(
+      fun(Channel) ->
+              Publish = ?PUBLISH_PACKET(?QOS_1, <<"topic">>, 1, <<"payload">>),
+              {ok, ?PUBACK_PACKET(1, RC), _} = handle_in(Publish, Channel),
+              ?assert((RC == ?RC_SUCCESS) orelse (RC == ?RC_NO_MATCHING_SUBSCRIBERS))
+      end).
+
+t_handle_publish_qos2(_) ->
+    with_channel(
+      fun(Channel) ->
+              Publish1 = ?PUBLISH_PACKET(?QOS_2, <<"topic">>, 1, <<"payload">>),
+              {ok, ?PUBREC_PACKET(1, RC), Channel1} = handle_in(Publish1, Channel),
+              Publish2 = ?PUBLISH_PACKET(?QOS_2, <<"topic">>, 2, <<"payload">>),
+              {ok, ?PUBREC_PACKET(2, RC), Channel2} = handle_in(Publish2, Channel1),
+              ?assert((RC == ?RC_SUCCESS) orelse (RC == ?RC_NO_MATCHING_SUBSCRIBERS)),
+              #{awaiting_rel := AwaitingRel} = emqx_channel:info(session, Channel2),
+              ?assertEqual(2, AwaitingRel)
+      end).
+
+t_handle_puback(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, Channel} = handle_in(?PUBACK_PACKET(1, ?RC_SUCCESS), Channel)
+      end).
+
+t_handle_pubrec(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?PUBREL_PACKET(1, ?RC_PACKET_IDENTIFIER_NOT_FOUND), Channel}
+                = handle_in(?PUBREC_PACKET(1, ?RC_SUCCESS), Channel)
+      end).
+
+t_handle_pubrel(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?PUBCOMP_PACKET(1, ?RC_PACKET_IDENTIFIER_NOT_FOUND), Channel}
+              = handle_in(?PUBREL_PACKET(1, ?RC_SUCCESS), Channel)
+      end).
+
+t_handle_pubcomp(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, Channel} = handle_in(?PUBCOMP_PACKET(1, ?RC_SUCCESS), Channel)
+      end).
+
+t_handle_subscribe(_) ->
+    with_channel(
+      fun(Channel) ->
+              TopicFilters = [{<<"+">>, ?DEFAULT_SUBOPTS}],
+              {ok, ?SUBACK_PACKET(10, [?QOS_0]), Channel1}
+                = handle_in(?SUBSCRIBE_PACKET(10, #{}, TopicFilters), Channel),
+              #{subscriptions := Subscriptions}
+                = emqx_channel:info(session, Channel1),
+              ?assertEqual(maps:from_list(TopicFilters), Subscriptions)
+      end).
+
+t_handle_unsubscribe(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?UNSUBACK_PACKET(11), Channel}
+                = handle_in(?UNSUBSCRIBE_PACKET(11, #{}, [<<"+">>]), Channel)
+      end).
+
+t_handle_pingreq(_) ->
+    with_channel(
+      fun(Channel) ->
+          {ok, ?PACKET(?PINGRESP), Channel} = handle_in(?PACKET(?PINGREQ), Channel)
+      end).
+
+t_handle_disconnect(_) ->
+    with_channel(
+      fun(Channel) ->
+              {wait_session_expire, {shutdown, normal}, Channel1} = handle_in(?DISCONNECT_PACKET(?RC_SUCCESS), Channel),
+              ?assertEqual(undefined, emqx_channel:info(will_msg, Channel1))
+      end).
+
+t_handle_auth(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, Channel} = handle_in(?AUTH_PACKET(), Channel)
+      end).
+
+%%--------------------------------------------------------------------
+%% Test cases for handle_deliver
+%%--------------------------------------------------------------------
+
+t_handle_deliver(_) ->
+    with_channel(
+      fun(Channel) ->
+              TopicFilters = [{<<"+">>, ?DEFAULT_SUBOPTS#{qos => ?QOS_2}}],
+              {ok, ?SUBACK_PACKET(1, [?QOS_2]), Channel1}
+                = handle_in(?SUBSCRIBE_PACKET(1, #{}, TopicFilters), Channel),
+              Msg0 = emqx_message:make(<<"clientx">>, ?QOS_0, <<"t0">>, <<"qos0">>),
+              Msg1 = emqx_message:make(<<"clientx">>, ?QOS_1, <<"t1">>, <<"qos1">>),
+              Delivers = [{deliver, <<"+">>, Msg0}, {deliver, <<"+">>, Msg1}],
+              {ok, Packets, _Ch} = emqx_channel:handle_out({deliver, Delivers}, Channel1),
+              ?assertEqual([?QOS_0, ?QOS_1], [emqx_packet:qos(Pkt)|| Pkt <- Packets])
+      end).
+
+%%--------------------------------------------------------------------
+%% Test cases for handle_out
+%%--------------------------------------------------------------------
+
+t_handle_connack(_) ->
+    ConnPkt = #mqtt_packet_connect{
+                 proto_name  = <<"MQTT">>,
+                 proto_ver   = ?MQTT_PROTO_V4,
+                 clean_start = true,
+                 properties  = #{},
+                 client_id   = <<"clientid">>
+                },
+    with_channel(
+      fun(Channel) ->
+              {ok, ?CONNACK_PACKET(?RC_SUCCESS, SP, _), _}
+                = handle_out({connack, ?RC_SUCCESS, 0, ConnPkt}, Channel),
+              {stop, {shutdown, not_authorized},
+               ?CONNACK_PACKET(?RC_NOT_AUTHORIZED), _}
+                = handle_out({connack, ?RC_NOT_AUTHORIZED, ConnPkt}, Channel)
+      end).
+
+t_handle_out_publish(_) ->
+    with_channel(
+      fun(Channel) ->
+              Pub0 = {publish, undefined, emqx_message:make(<<"t">>, <<"qos0">>)},
+              Pub1 = {publish, 1, emqx_message:make(<<"c">>, ?QOS_1, <<"t">>, <<"qos1">>)},
+              {ok, ?PUBLISH_PACKET(?QOS_0), Channel} = handle_out(Pub0, Channel),
+              {ok, ?PUBLISH_PACKET(?QOS_1), Channel} = handle_out(Pub1, Channel),
+              {ok, Packets, Channel} = handle_out({publish, [Pub0, Pub1]}, Channel),
+              ?assertEqual(2, length(Packets))
+      end).
+
+t_handle_out_puback(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, Channel} = handle_out({puberr, ?RC_NOT_AUTHORIZED}, Channel),
+              {ok, ?PUBACK_PACKET(1, ?RC_SUCCESS), Channel}
+                = handle_out({puback, 1, ?RC_SUCCESS}, Channel)
+      end).
+
+t_handle_out_pubrec(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?PUBREC_PACKET(4, ?RC_SUCCESS), Channel}
+                = handle_out({pubrec, 4, ?RC_SUCCESS}, Channel)
+      end).
+
+t_handle_out_pubrel(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?PUBREL_PACKET(2), Channel}
+                = handle_out({pubrel, 2, ?RC_SUCCESS}, Channel),
+              {ok, ?PUBREL_PACKET(3, ?RC_SUCCESS), Channel}
+                = handle_out({pubrel, 3, ?RC_SUCCESS}, Channel)
+      end).
+
+t_handle_out_pubcomp(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?PUBCOMP_PACKET(5, ?RC_SUCCESS), Channel}
+                = handle_out({pubcomp, 5, ?RC_SUCCESS}, Channel)
+      end).
+
+t_handle_out_suback(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?SUBACK_PACKET(1, [?QOS_2]), Channel}
+                 = handle_out({suback, 1, [?QOS_2]}, Channel)
+      end).
+
+t_handle_out_unsuback(_) ->
+    with_channel(
+      fun(Channel) ->
+              {ok, ?UNSUBACK_PACKET(1), Channel}
+                = handle_out({unsuback, 1, [?RC_SUCCESS]}, Channel)
+      end).
+
+t_handle_out_disconnect(_) ->
+    with_channel(
+      fun(Channel) ->
+              handle_out({disconnect, ?RC_SUCCESS}, Channel)
+      end).
+
+%%--------------------------------------------------------------------
+%% Test cases for handle_timeout
+%%--------------------------------------------------------------------
+
+t_handle_timeout(_) ->
+    with_channel(
+      fun(Channel) ->
+        'TODO'
+      end).
+
+%%--------------------------------------------------------------------
+%% Test cases for terminate
+%%--------------------------------------------------------------------
+
+t_terminate(_) ->
+    with_channel(
+      fun(Channel) ->
+        'TODO'
+      end).
+
+%%--------------------------------------------------------------------
+%% Helper functions
+%%--------------------------------------------------------------------
+
+with_channel(TestFun) ->
+    ConnInfo = #{peername => {{127,0,0,1}, 3456},
+                 sockname => {{127,0,0,1}, 1883},
+                 protocol => mqtt,
+                 conn_mod => emqx_connection,
+                 proto_name => <<"MQTT">>,
+                 proto_ver => ?MQTT_PROTO_V5,
+                 clean_start => true,
+                 keepalive => 30,
+                 client_id => <<"clientid">>,
+                 username => <<"username">>,
+                 conn_props => #{},
+                 receive_maximum => 100,
+                 expiry_interval => 60
+                },
+    ClientInfo = #{zone => <<"external">>,
+                   protocol => mqtt,
+                   peerhost => {127,0,0,1},
+                   client_id => <<"clientid">>,
+                   username => <<"username">>,
+                   peercert => undefined,
+                   is_bridge => false,
+                   is_superuser => false,
+                   mountpoint => undefined
+                  },
+    Channel = emqx_channel:init(ConnInfo, [{zone, testing}]),
+    Session = emqx_session:init(ClientInfo, ConnInfo),
+    Channel1 = emqx_channel:set_field(client, ClientInfo, Channel),
+    TestFun(emqx_channel:set_field(session, Session, Channel1)).
+

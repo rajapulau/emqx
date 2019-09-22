@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,33 +12,40 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_mod_sup_SUITE).
 
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
-all() -> [t_child_all].
+all() -> emqx_ct:all(?MODULE).
 
-start_link() ->
-    Pid = spawn_link(?MODULE, echo, [0]),
-    {ok, Pid}.
+%%--------------------------------------------------------------------
+%% Test cases
+%%--------------------------------------------------------------------
 
-echo(State) ->
-    receive
-        {From, Req} ->
-            ct:pal("======from:~p, req:~p", [From, Req]),
-            From ! Req,
-            echo(State)
-    end.
+t_start(_) ->
+    {ok, _} = emqx_mod_sup:start_link(),
+    ?assertEqual([], supervisor:which_children(emqx_mod_sup)).
 
-t_child_all(_) ->
-    {ok, Pid} = emqx_mod_sup:start_link(),
-    {ok, Child} = emqx_mod_sup:start_child(?MODULE, worker),
-    timer:sleep(10),
-    Child ! {self(), hi},
-    receive hi -> ok after 100 -> ct:fail({timeout, wait_echo}) end,
-    ok = emqx_mod_sup:stop_child(?MODULE),
-    exit(Pid, normal).
+t_start_child(_) ->
+    %% Set the emqx_mod_sup child with emqx_hooks for test
+    Mod = emqx_hooks,
+    Spec = #{id => Mod,
+             start => {Mod, start_link, []},
+             restart => permanent,
+             shutdown => 5000,
+             type => worker,
+             modules => [Mod]},
+
+    {ok, _} = emqx_mod_sup:start_link(),
+    {ok, _} = emqx_mod_sup:start_child(Mod, worker),
+    {error, {already_started, _}} = emqx_mod_sup:start_child(Spec),
+
+    ok = emqx_mod_sup:stop_child(Mod),
+    {error, not_found} = emqx_mod_sup:stop_child(Mod),
+    ok.
+

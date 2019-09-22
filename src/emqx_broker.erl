@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_broker).
 
@@ -204,7 +206,7 @@ publish(Msg) when is_record(Msg, message) ->
     end.
 
 %% Called internally
--spec(safe_publish(emqx_types:message()) -> ok).
+-spec(safe_publish(emqx_types:message()) -> ok | emqx_types:publish_result()).
 safe_publish(Msg) when is_record(Msg, message) ->
     try
         publish(Msg)
@@ -234,7 +236,7 @@ route(Routes, Delivery) ->
 do_route({To, Node}, Delivery) when Node =:= node() ->
     {Node, To, dispatch(To, Delivery)};
 do_route({To, Node}, Delivery) when is_atom(Node) ->
-    {Node, To, forward(Node, To, Delivery, emqx_config:get_env(rpc_mode, async))};
+    {Node, To, forward(Node, To, Delivery, emqx:get_env(rpc_mode, async))};
 do_route({To, Group}, Delivery) when is_tuple(Group); is_binary(Group) ->
     {share, To, emqx_shared_sub:dispatch(Group, To, Delivery)}.
 
@@ -293,7 +295,7 @@ dispatch(Topic, #delivery{message = Msg}) ->
 dispatch(SubPid, Topic, Msg) when is_pid(SubPid) ->
     case erlang:is_process_alive(SubPid) of
         true ->
-            SubPid ! {dispatch, Topic, Msg},
+            SubPid ! {deliver, Topic, Msg},
             ok;
         false -> {error, subscriber_die}
     end;
@@ -386,9 +388,9 @@ set_subopts(Topic, NewOpts) when is_binary(Topic), is_map(NewOpts) ->
 topics() ->
     emqx_router:topics().
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% Stats fun
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 stats_fun() ->
     safe_update_stats(?SUBSCRIBER, 'subscribers.count', 'subscribers.max'),

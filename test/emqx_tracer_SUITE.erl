@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_tracer_SUITE).
 
@@ -21,21 +23,22 @@
 
 -include_lib("common_test/include/ct.hrl").
 
-all() -> [start_traces].
+all() -> [t_start_traces].
 
 init_per_suite(Config) ->
+    emqx_ct_helpers:boot_modules(all),
     emqx_ct_helpers:start_apps([]),
     Config.
 
 end_per_suite(_Config) ->
     emqx_ct_helpers:stop_apps([]).
 
-start_traces(_Config) ->
-    {ok, T} = emqx_client:start_link([{host, "localhost"},
+t_start_traces(_Config) ->
+    {ok, T} = emqtt:start_link([{host, "localhost"},
                                       {client_id, <<"client">>},
                                       {username, <<"testuser">>},
                                       {password, <<"pass">>}]),
-    emqx_client:connect(T),
+    emqtt:connect(T),
 
     %% Start tracing
     emqx_logger:set_log_level(error),
@@ -43,7 +46,7 @@ start_traces(_Config) ->
     emqx_logger:set_log_level(debug),
     ok = emqx_tracer:start_trace({client_id, <<"client">>}, debug, "tmp/client.log"),
     ok = emqx_tracer:start_trace({client_id, <<"client2">>}, all, "tmp/client2.log"),
-    {error, invalid_log_level} = emqx_tracer:start_trace({client_id, <<"client3">>}, bad_level, "tmp/client3.log"),
+    {error, {invalid_log_level, bad_level}} = emqx_tracer:start_trace({client_id, <<"client3">>}, bad_level, "tmp/client3.log"),
     ok = emqx_tracer:start_trace({topic, <<"a/#">>}, all, "tmp/topic_trace.log"),
     ct:sleep(100),
 
@@ -53,15 +56,15 @@ start_traces(_Config) ->
     ?assert(filelib:is_regular("tmp/topic_trace.log")),
 
     %% Get current traces
-    ?assertEqual([{{client_id,<<"client">>},{debug,"tmp/client.log"}},
-                  {{client_id,<<"client2">>},{all,"tmp/client2.log"}},
-                  {{topic,<<"a/#">>},{all,"tmp/topic_trace.log"}}], emqx_tracer:lookup_traces()),
+    ?assertEqual([{{client_id,"client"},{debug,"tmp/client.log"}},
+                  {{client_id,"client2"},{debug,"tmp/client2.log"}},
+                  {{topic,"a/#"},{debug,"tmp/topic_trace.log"}}], emqx_tracer:lookup_traces()),
 
     %% set the overall log level to debug
     emqx_logger:set_log_level(debug),
 
     %% Client with clientid = "client" publishes a "hi" message to "a/b/c".
-    emqx_client:publish(T, <<"a/b/c">>, <<"hi">>),
+    emqtt:publish(T, <<"a/b/c">>, <<"hi">>),
     ct:sleep(200),
 
     %% Verify messages are logged to "tmp/client.log" and "tmp/topic_trace.log", but not "tmp/client2.log".
@@ -73,6 +76,6 @@ start_traces(_Config) ->
     ok = emqx_tracer:stop_trace({client_id, <<"client">>}),
     ok = emqx_tracer:stop_trace({client_id, <<"client2">>}),
     ok = emqx_tracer:stop_trace({topic, <<"a/#">>}),
-    emqx_client:disconnect(T),
+    emqtt:disconnect(T),
 
     emqx_logger:set_log_level(warning).

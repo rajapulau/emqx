@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,73 +12,18 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_SUITE).
 
 -compile(export_all).
 -compile(nowarn_export_all).
 
--define(APP, emqx).
-
+-include("emqx.hrl").
 -include_lib("eunit/include/eunit.hrl").
-
 -include_lib("common_test/include/ct.hrl").
 
--include("emqx_mqtt.hrl").
-
--record(ssl_socket, {tcp, ssl}).
-
-
--define(CLIENT, ?CONNECT_PACKET(#mqtt_packet_connect{
-                                client_id = <<"mqtt_client">>,
-                                username  = <<"admin">>,
-                                password  = <<"public">>})).
-
--define(CLIENT2, ?CONNECT_PACKET(#mqtt_packet_connect{
-                                username  = <<"admin">>,
-                                clean_start = false,
-                                password  = <<"public">>})).
-
--define(CLIENT3, ?CONNECT_PACKET(#mqtt_packet_connect{
-                                username  = <<"admin">>,
-                                proto_ver = ?MQTT_PROTO_V5,
-                                clean_start = false,
-                                password  = <<"public">>,
-                                will_props = #{'Will-Delay-Interval' => 2}})).
-
--define(SUBCODE, [0]).
-
--define(PACKETID, 1).
-
--define(PUBQOS, 1).
-
--define(SUBPACKET, ?SUBSCRIBE_PACKET(?PACKETID, [{<<"sub/topic">>, ?DEFAULT_SUBOPTS}])).
-
--define(PUBPACKET, ?PUBLISH_PACKET(?PUBQOS, <<"sub/topic">>, ?PACKETID, <<"publish">>)).
-
--define(PAYLOAD, [{type,"dsmSimulationData"},
-                  {id, 9999},
-                  {status, "running"},
-                  {soc, 1536702170},
-                  {fracsec, 451000},
-                  {data, lists:seq(1, 20480)}]).
-
--define(BIG_PUBPACKET, ?PUBLISH_PACKET(?PUBQOS, <<"sub/topic">>, ?PACKETID, emqx_json:encode(?PAYLOAD))).
-
-all() ->
-    [{group, connect},
-     {group, publish}].
-
-groups() ->
-    [{connect, [non_parallel_tests],
-      [mqtt_connect,
-       mqtt_connect_with_tcp,
-       mqtt_connect_with_will_props,
-       mqtt_connect_with_ssl_oneway,
-       mqtt_connect_with_ssl_twoway,
-       mqtt_connect_with_ws]},
-     {publish, [non_parallel_tests],
-      [packet_size]}].
+all() -> emqx_ct:all(?MODULE).
 
 init_per_suite(Config) ->
     emqx_ct_helpers:start_apps([]),
@@ -86,121 +32,59 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     emqx_ct_helpers:stop_apps([]).
 
-%%--------------------------------------------------------------------
-%% Protocol Test
-%%--------------------------------------------------------------------
-mqtt_connect(_) ->
-    %% Issue #599
-    %% Empty clientId and clean_session = false
-    ?assertEqual(<<32,2,0,2>>, connect_broker_(<<16,12,0,4,77,81,84,84,4,0,0,90,0,0>>, 4)),
-    %% Empty clientId and clean_session = true
-    ?assertEqual(<<32,2,0,0>>, connect_broker_(<<16,12,0,4,77,81,84,84,4,2,0,90,0,0>>, 4)).
+t_get_env(_) ->
+    ?assertEqual(undefined, emqx:get_env(undefined_key)),
+    ?assertEqual(default_value, emqx:get_env(undefined_key, default_value)),
+    application:set_env(emqx, undefined_key, hello),
+    ?assertEqual(hello, emqx:get_env(undefined_key)),
+    ?assertEqual(hello, emqx:get_env(undefined_key, default_value)),
+    application:unset_env(emqx, undefined_key).
 
-connect_broker_(Packet, RecvSize) ->
-    {ok, Sock} = emqx_client_sock:connect({127,0,0,1}, 1883, [binary, {packet, raw}, {active, false}], 3000),
-    emqx_client_sock:send(Sock, Packet),
-    {ok, Data} = gen_tcp:recv(Sock, RecvSize, 3000),
-    emqx_client_sock:close(Sock),
-    Data.
-
-mqtt_connect_with_tcp(_) ->
-    %% Issue #599
-    %% Empty clientId and clean_session = false
-    {ok, Sock} = emqx_client_sock:connect({127,0,0,1}, 1883, [binary, {packet, raw}, {active, false}], 3000),
-    Packet = raw_send_serialize(?CLIENT2),
-    emqx_client_sock:send(Sock, Packet),
-    {ok, Data} = gen_tcp:recv(Sock, 0),
-    {ok, ?CONNACK_PACKET(?CONNACK_INVALID_ID), <<>>, _} = raw_recv_pase(Data),
-    emqx_client_sock:close(Sock).
-
-mqtt_connect_with_will_props(_) ->
-    %% Issue #599
-    %% Empty clientId and clean_session = false
-    {ok, Sock} = emqx_client_sock:connect({127,0,0,1}, 1883, [binary, {packet, raw}, {active, false}], 3000),
-    Packet = raw_send_serialize(?CLIENT3),
-    emqx_client_sock:send(Sock, Packet),
-    emqx_client_sock:close(Sock).
-
-mqtt_connect_with_ssl_oneway(_) ->
-    emqx:shutdown(),
-    emqx_ct_helpers:change_emqx_opts(ssl_oneway),
+t_emqx_pubsub_api(_) ->
     emqx:start(),
-    ClientSsl = emqx_ct_helpers:client_ssl(),
-    {ok, #ssl_socket{tcp = _Sock1, ssl = SslSock} = Sock}
-    = emqx_client_sock:connect("127.0.0.1", 8883, [{ssl_opts, ClientSsl}], 3000),
-    Packet = raw_send_serialize(?CLIENT),
-    emqx_client_sock:setopts(Sock, [{active, once}]),
-    emqx_client_sock:send(Sock, Packet),
-    ?assert(
-    receive {ssl, _, ConAck}->
-        {ok, ?CONNACK_PACKET(?CONNACK_ACCEPT), <<>>, _} = raw_recv_pase(ConAck), true
-    after 1000 ->
-        false
-    end),
-    ssl:close(SslSock).
+    true = emqx:is_running(node()),
+    {ok, C} = emqtt:start_link([{host, "localhost"}, {client_id, "myclient"}]),
+    {ok, _} = emqtt:connect(C),
+    ClientId = <<"myclient">>,
+    Topic = <<"mytopic">>,
+    Payload = <<"Hello World">>,
+    Topic1 = <<"mytopic1">>,
+    emqx:subscribe(Topic, ClientId),
+    ct:sleep(100),
+    ?assertEqual([Topic], emqx:topics()),
+    ?assertEqual([self()], emqx:subscribers(Topic)),
+    ?assertEqual([{Topic,#{qos => 0,subid => ClientId}}], emqx:subscriptions(self())),
+    ?assertEqual(true, emqx:subscribed(self(), Topic)),
+    ?assertEqual(true, emqx:subscribed(ClientId, Topic)),
+    ?assertEqual(false, emqx:subscribed(self(), Topic1)),
+    ?assertEqual(false, emqx:subscribed(ClientId, Topic1)),
+    emqx:publish(emqx_message:make(Topic, Payload)),
+    receive
+        {deliver, Topic, #message{payload = Payload}} ->
+            ok
+    after 100 ->
+        ct:fail("no_message")
+    end,
+    emqx:unsubscribe(Topic),
+    ct:sleep(20),
+    ?assertEqual([], emqx:topics()).
 
-mqtt_connect_with_ssl_twoway(_Config) ->
-    emqx:shutdown(),
-    emqx_ct_helpers:change_emqx_opts(ssl_twoway),
-    emqx:start(),
-    ClientSsl = emqx_ct_helpers:client_ssl_twoway(),
-    {ok, #ssl_socket{tcp = _Sock1, ssl = SslSock} = Sock}
-        = emqx_client_sock:connect("127.0.0.1", 8883, [{ssl_opts, ClientSsl}], 3000),
-    Packet = raw_send_serialize(?CLIENT),
-    emqx_client_sock:setopts(Sock, [{active, once}]),
-    emqx_client_sock:send(Sock, Packet),
-    timer:sleep(500),
-    ?assert(
-    receive {ssl, _, Data}->
-        {ok, ?CONNACK_PACKET(?CONNACK_ACCEPT), <<>>, _} = raw_recv_pase(Data), true
-    after 1000 ->
-        false
-    end),
-    ssl:close(SslSock),
-    emqx_client_sock:close(Sock).
+t_emqx_hook_api(_) ->
+    InitArgs = ['arg2', 'arg3'],
+    emqx:hook('hook.run', fun run/3, InitArgs),
+    ok = emqx:run_hook('hook.run', ['arg1']),
+    emqx:unhook('hook.run', fun run/3),
 
-mqtt_connect_with_ws(_Config) ->
-    WS = rfc6455_client:new("ws://127.0.0.1:8083" ++ "/mqtt", self()),
-    {ok, _} = rfc6455_client:open(WS),
+    emqx:hook('hook.run_fold', fun add1/1),
+    emqx:hook('hook.run_fold', fun add2/1),
+    4 = emqx:run_fold_hook('hook.run_fold', [], 1),
+    emqx:unhook('hook.run_fold', fun add1/1),
+    emqx:unhook('hook.run_fold', fun add2/1).
 
-    %% Connect Packet
-    Packet = raw_send_serialize(?CLIENT),
-    ok = rfc6455_client:send_binary(WS, Packet),
-    {binary, CONACK} = rfc6455_client:recv(WS),
-    {ok, ?CONNACK_PACKET(?CONNACK_ACCEPT), <<>>, _} = raw_recv_pase(CONACK),
+run('arg1', 'arg2', 'arg3') ->
+    ok;
+run(_, _, _) ->
+    ct:fail("no_match").
 
-    %% Sub Packet
-    SubPacket = raw_send_serialize(?SUBPACKET),
-    rfc6455_client:send_binary(WS, SubPacket),
-    {binary, SubAck} = rfc6455_client:recv(WS),
-    {ok, ?SUBACK_PACKET(?PACKETID, ?SUBCODE), <<>>, _} = raw_recv_pase(SubAck),
-
-    %% Pub Packet QoS 1
-    PubPacket = raw_send_serialize(?PUBPACKET),
-    rfc6455_client:send_binary(WS, PubPacket),
-    {binary, PubAck} = rfc6455_client:recv(WS),
-    {ok, ?PUBACK_PACKET(?PACKETID), <<>>, _} = raw_recv_pase(PubAck),
-    {close, _} = rfc6455_client:close(WS),
-    ok.
-
-%%issue 1811
-packet_size(_Config) ->
-    {ok, Sock} = emqx_client_sock:connect({127,0,0,1}, 1883, [binary, {packet, raw}, {active, false}], 3000),
-    Packet = raw_send_serialize(?CLIENT),
-    emqx_client_sock:send(Sock, Packet),
-    {ok, Data} = gen_tcp:recv(Sock, 0),
-    {ok, ?CONNACK_PACKET(?CONNACK_ACCEPT), <<>>, _} = raw_recv_pase(Data),
-
-    %% Pub Packet QoS 1
-    PubPacket = raw_send_serialize(?BIG_PUBPACKET),
-    emqx_client_sock:send(Sock, PubPacket),
-    {ok, Data1} = gen_tcp:recv(Sock, 0),
-    {ok, ?PUBACK_PACKET(?PACKETID), <<>>, _} = raw_recv_pase(Data1),
-    emqx_client_sock:close(Sock).
-
-raw_send_serialize(Packet) ->
-    emqx_frame:serialize(Packet).
-
-raw_recv_pase(Bin) ->
-    emqx_frame:parse(Bin).
-
+add1(N) -> {ok, N + 1}.
+add2(N) -> {ok, N + 2}.

@@ -17,6 +17,8 @@
 -ifndef(EMQ_X_MQTT_HRL).
 -define(EMQ_X_MQTT_HRL, true).
 
+-define(UINT_MAX, 16#FFFFFFFF).
+
 %%--------------------------------------------------------------------
 %% MQTT SockOpts
 %%--------------------------------------------------------------------
@@ -204,8 +206,7 @@
 -define(DEFAULT_SUBOPTS, #{rh  => 0, %% Retain Handling
                            rap => 0, %% Retain as Publish
                            nl  => 0, %% No Local
-                           qos => 0, %% QoS
-                           rc  => 0  %% Reason Code
+                           qos => 0  %% QoS
                           }).
 
 -record(mqtt_packet_connect, {
@@ -300,6 +301,20 @@
         }).
 
 %%--------------------------------------------------------------------
+%% MQTT Message Internal
+%%--------------------------------------------------------------------
+
+-record(mqtt_msg, {
+          qos = ?QOS_0,
+          retain = false,
+          dup = false,
+          packet_id,
+          topic,
+          props,
+          payload
+         }).
+
+%%--------------------------------------------------------------------
 %% MQTT Packet Match
 %%--------------------------------------------------------------------
 
@@ -349,6 +364,13 @@
     #mqtt_packet{header   = #mqtt_packet_header{type = ?PUBLISH,
                                                 qos  = QoS},
                  variable = #mqtt_packet_publish{packet_id = PacketId}
+                }).
+
+-define(PUBLISH_PACKET(QoS, Topic, PacketId),
+    #mqtt_packet{header   = #mqtt_packet_header{type = ?PUBLISH,
+                                                qos  = QoS},
+                 variable = #mqtt_packet_publish{topic_name = Topic,
+                                                 packet_id  = PacketId}
                 }).
 
 -define(PUBLISH_PACKET(QoS, Topic, PacketId, Payload),

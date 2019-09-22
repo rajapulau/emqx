@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_app).
 
@@ -30,13 +32,13 @@ start(_Type, _Args) ->
     print_banner(),
     ekka:start(),
     {ok, Sup} = emqx_sup:start_link(),
-    emqx_modules:load(),
-    emqx_plugins:init(),
+    ok = emqx_modules:load(),
+    ok = emqx_plugins:init(),
     emqx_plugins:load(),
-    emqx_listeners:start(),
+    emqx_boot:is_enabled(listeners)
+      andalso (ok = emqx_listeners:start()),
     start_autocluster(),
     register(emqx, self()),
-
     emqx_alarm_handler:load(),
     print_vsn(),
     {ok, Sup}.
@@ -44,7 +46,8 @@ start(_Type, _Args) ->
 -spec(stop(State :: term()) -> term()).
 stop(_State) ->
     emqx_alarm_handler:unload(),
-    emqx_listeners:stop(),
+    emqx_boot:is_enabled(listeners)
+      andalso emqx_listeners:stop(),
     emqx_modules:unload().
 
 %%--------------------------------------------------------------------

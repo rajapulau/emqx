@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_plugins).
 
@@ -30,14 +32,14 @@
         , load_expand_plugin/1
         ]).
 
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 %% APIs
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 %% @doc Init plugins' config
 -spec(init() -> ok).
 init() ->
-    case emqx_config:get_env(plugins_etc_dir) of
+    case emqx:get_env(plugins_etc_dir) of
         undefined  -> ok;
         PluginsEtc ->
             CfgFiles = [filename:join(PluginsEtc, File) ||
@@ -47,24 +49,23 @@ init() ->
 
 init_config(CfgFile) ->
     {ok, [AppsEnv]} = file:consult(CfgFile),
-    lists:foreach(fun({AppName, Envs}) ->
-                      [application:set_env(AppName, Par, Val) || {Par, Val} <- Envs]
+    lists:foreach(fun({App, Envs}) ->
+                      [application:set_env(App, Par, Val) || {Par, Val} <- Envs]
                   end, AppsEnv).
 
 %% @doc Load all plugins when the broker started.
 -spec(load() -> list() | {error, term()}).
 load() ->
     load_expand_plugins(),
-    case emqx_config:get_env(plugins_loaded_file) of
-        undefined -> %% No plugins available
-            ignore;
+    case emqx:get_env(plugins_loaded_file) of
+        undefined -> ignore; %% No plugins available
         File ->
             ensure_file(File),
             with_loaded_file(File, fun(Names) -> load_plugins(Names, false) end)
     end.
 
 load_expand_plugins() ->
-    case emqx_config:get_env(expand_plugins_dir) of
+    case emqx:get_env(expand_plugins_dir) of
         undefined -> ok;
         ExpandPluginsDir ->
             Plugins = filelib:wildcard("*", ExpandPluginsDir),
@@ -79,9 +80,9 @@ load_expand_plugins() ->
 
 load_expand_plugin(PluginDir) ->
     init_expand_plugin_config(PluginDir),
-    Ebin = PluginDir ++ "/ebin",
+    Ebin = filename:join([PluginDir, "ebin"]),
     code:add_patha(Ebin),
-    Modules = filelib:wildcard(Ebin ++ "/*.beam"),
+    Modules = filelib:wildcard(filename:join([Ebin ++ "*.beam"])),
     lists:foreach(fun(Mod) ->
         Module = list_to_atom(filename:basename(Mod, ".beam")),
         code:load_file(Module)
@@ -136,9 +137,8 @@ load_plugins(Names, Persistent) ->
 %% @doc Unload all plugins before broker stopped.
 -spec(unload() -> list() | {error, term()}).
 unload() ->
-    case emqx_config:get_env(plugins_loaded_file) of
-        undefined ->
-            ignore;
+    case emqx:get_env(plugins_loaded_file) of
+        undefined -> ignore;
         File ->
             with_loaded_file(File, fun stop_plugins/1)
     end.
@@ -298,7 +298,7 @@ plugin_unloaded(Name, true) ->
     end.
 
 read_loaded() ->
-    case emqx_config:get_env(plugins_loaded_file) of
+    case emqx:get_env(plugins_loaded_file) of
         undefined -> {error, not_found};
         File      -> read_loaded(File)
     end.
@@ -306,14 +306,11 @@ read_loaded() ->
 read_loaded(File) -> file:consult(File).
 
 write_loaded(AppNames) ->
-    File = emqx_config:get_env(plugins_loaded_file),
-    case file:open(File, [binary, write]) of
-        {ok, Fd} ->
-            lists:foreach(fun(Name) ->
-                file:write(Fd, iolist_to_binary(io_lib:format("~p.~n", [Name])))
-            end, AppNames);
+    FilePath = emqx:get_env(plugins_loaded_file),
+    case file:write_file(FilePath, [io_lib:format("~p.~n", [Name]) || Name <- AppNames]) of
+        ok -> ok;
         {error, Error} ->
-            ?LOG(error, "Open File ~p Error: ~p", [File, Error]),
+            ?LOG(error, "Write File ~p Error: ~p", [FilePath, Error]),
             {error, Error}
     end.
 
@@ -322,4 +319,3 @@ plugin_type(protocol) -> protocol;
 plugin_type(backend) -> backend;
 plugin_type(bridge) -> bridge;
 plugin_type(_) -> feature.
-

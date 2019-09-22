@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,136 +12,236 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_packet).
 
 -include("emqx.hrl").
 -include("emqx_mqtt.hrl").
 
--export([ protocol_name/1
+%% Header APIs
+-export([ type/1
         , type_name/1
-        , validate/1
-        , format/1
-        , to_message/2
-        , from_message/2
+        , dup/1
+        , qos/1
+        , retain/1
+        ]).
+
+-export([ proto_name/1
+        , proto_ver/1
+        ]).
+
+%% Check API
+-export([ check/1
+        , check/2
+        ]).
+
+-export([ to_message/2
         , will_msg/1
         ]).
 
-%% @doc Protocol name of version
--spec(protocol_name(emqx_mqtt_types:version()) -> binary()).
-protocol_name(?MQTT_PROTO_V3) ->
-    <<"MQIsdp">>;
-protocol_name(?MQTT_PROTO_V4) ->
-    <<"MQTT">>;
-protocol_name(?MQTT_PROTO_V5) ->
-    <<"MQTT">>.
+-export([format/1]).
 
-%% @doc Name of MQTT packet type
--spec(type_name(emqx_mqtt_types:packet_type()) -> atom()).
-type_name(Type) when Type > ?RESERVED andalso Type =< ?AUTH ->
-    lists:nth(Type, ?TYPE_NAMES).
+-type(connect() :: #mqtt_packet_connect{}).
+-type(publish() :: #mqtt_packet_publish{}).
+-type(subscribe() :: #mqtt_packet_subscribe{}).
+-type(unsubscribe() :: #mqtt_packet_unsubscribe{}).
 
-%%------------------------------------------------------------------------------
-%% Validate MQTT Packet
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
+%% MQTT Packet Type and Flags.
+%%--------------------------------------------------------------------
 
-validate(?SUBSCRIBE_PACKET(_PacketId, _Properties, [])) ->
-    error(topic_filters_invalid);
-validate(?SUBSCRIBE_PACKET(PacketId, Properties, TopicFilters)) ->
-    validate_packet_id(PacketId)
-        andalso validate_properties(?SUBSCRIBE, Properties)
-            andalso ok == lists:foreach(fun validate_subscription/1, TopicFilters);
+%% @doc MQTT packet type.
+-spec(type(emqx_types:packet()) -> emqx_types:packet_type()).
+type(#mqtt_packet{header = #mqtt_packet_header{type = Type}}) ->
+    Type.
 
-validate(?UNSUBSCRIBE_PACKET(_PacketId, [])) ->
-    error(topic_filters_invalid);
-validate(?UNSUBSCRIBE_PACKET(PacketId, TopicFilters)) ->
-    validate_packet_id(PacketId)
-        andalso ok == lists:foreach(fun emqx_topic:validate/1, TopicFilters);
+%% @doc Name of MQTT packet type.
+-spec(type_name(emqx_types:packet()) -> atom()).
+type_name(Packet) when is_record(Packet, mqtt_packet) ->
+    lists:nth(type(Packet), ?TYPE_NAMES).
 
-validate(?PUBLISH_PACKET(_QoS, <<>>, _, #{'Topic-Alias':= _I}, _)) ->
-    true;
-validate(?PUBLISH_PACKET(_QoS, <<>>, _, _, _)) ->
-    error(topic_name_invalid);
-validate(?PUBLISH_PACKET(_QoS, Topic, _, Properties, _)) ->
-    ((not emqx_topic:wildcard(Topic)) orelse error(topic_name_invalid))
-        andalso validate_properties(?PUBLISH, Properties);
+%% @doc Dup flag of MQTT packet.
+-spec(dup(emqx_types:packet()) -> boolean()).
+dup(#mqtt_packet{header = #mqtt_packet_header{dup = Dup}}) ->
+    Dup.
 
-validate(?CONNECT_PACKET(#mqtt_packet_connect{properties = Properties})) ->
-    validate_properties(?CONNECT, Properties);
+%% @doc QoS of MQTT packet type.
+-spec(qos(emqx_types:packet()) -> emqx_types:qos()).
+qos(#mqtt_packet{header = #mqtt_packet_header{qos = QoS}}) ->
+    QoS.
 
-validate(_Packet) ->
-    true.
+%% @doc Retain flag of MQTT packet.
+-spec(retain(emqx_types:packet()) -> boolean()).
+retain(#mqtt_packet{header = #mqtt_packet_header{retain = Retain}}) ->
+    Retain.
 
-validate_packet_id(0) ->
-    error(packet_id_invalid);
-validate_packet_id(_) ->
-    true.
+%%--------------------------------------------------------------------
+%% Protocol name and version of MQTT CONNECT Packet.
+%%--------------------------------------------------------------------
 
-validate_properties(?SUBSCRIBE, #{'Subscription-Identifier' := I})
-    when I =< 0; I >= 16#FFFFFFF ->
-    error(subscription_identifier_invalid);
-validate_properties(?PUBLISH, #{'Topic-Alias':= I})
-    when I =:= 0 ->
-    error(topic_alias_invalid);
-validate_properties(?PUBLISH, #{'Subscription-Identifier' := _I}) ->
-    error(protocol_error);
-validate_properties(?PUBLISH, #{'Response-Topic' := ResponseTopic}) ->
-    case emqx_topic:wildcard(ResponseTopic) of
-        true ->
-            error(protocol_error);
-        false ->
-            true
+%% @doc Protocol name of the CONNECT Packet.
+-spec(proto_name(emqx_types:packet()|connect()) -> binary()).
+proto_name(?CONNECT_PACKET(ConnPkt)) ->
+    proto_name(ConnPkt);
+proto_name(#mqtt_packet_connect{proto_name = Name}) ->
+    Name.
+
+%% @doc Protocol version of the CONNECT Packet.
+-spec(proto_ver(emqx_types:packet()|connect()) -> emqx_types:version()).
+proto_ver(?CONNECT_PACKET(ConnPkt)) ->
+    proto_ver(ConnPkt);
+proto_ver(#mqtt_packet_connect{proto_ver = Ver}) ->
+    Ver.
+
+%%--------------------------------------------------------------------
+%% Check MQTT Packet
+%%--------------------------------------------------------------------
+
+%% @doc Check PubSub Packet.
+-spec(check(emqx_types:packet()|publish()|subscribe()|unsubscribe())
+      -> ok | {error, emqx_types:reason_code()}).
+check(#mqtt_packet{variable = PubPkt}) when is_record(PubPkt, mqtt_packet_publish) ->
+    check(PubPkt);
+
+check(#mqtt_packet{variable = SubPkt}) when is_record(SubPkt, mqtt_packet_subscribe) ->
+    check(SubPkt);
+
+check(#mqtt_packet{variable = UnsubPkt}) when is_record(UnsubPkt, mqtt_packet_unsubscribe) ->
+    check(UnsubPkt);
+
+check(#mqtt_packet_publish{topic_name = <<>>, properties = #{'Topic-Alias':= _TopicAlias}}) ->
+    ok;
+check(#mqtt_packet_publish{topic_name = <<>>, properties = #{}}) ->
+    {error, ?RC_PROTOCOL_ERROR};
+check(#mqtt_packet_publish{topic_name = TopicName, properties = Props}) ->
+    try emqx_topic:validate(name, TopicName) of
+        true -> check_pub_props(Props)
+    catch
+        error:_Error ->
+            {error, ?RC_TOPIC_NAME_INVALID}
     end;
-validate_properties(?CONNECT, #{'Receive-Maximum' := 0}) ->
-    error(protocol_error);
-validate_properties(?CONNECT, #{'Request-Response-Information' := ReqRespInfo})
-    when ReqRespInfo =/= 0, ReqRespInfo =/= 1 ->
-    error(protocol_error);
-validate_properties(?CONNECT, #{'Request-Problem-Information' := ReqProInfo})
+
+check(#mqtt_packet_subscribe{properties = #{'Subscription-Identifier' := I}})
+  when I =< 0; I >= 16#FFFFFFF ->
+    {error, ?RC_SUBSCRIPTION_IDENTIFIERS_NOT_SUPPORTED};
+
+check(#mqtt_packet_subscribe{topic_filters = []}) ->
+    {error, ?RC_TOPIC_FILTER_INVALID};
+
+check(#mqtt_packet_subscribe{topic_filters = TopicFilters}) ->
+    try validate_topic_filters(TopicFilters)
+    catch
+        error:_Error ->
+            {error, ?RC_TOPIC_FILTER_INVALID}
+    end;
+
+check(#mqtt_packet_unsubscribe{topic_filters = []}) ->
+    {error, ?RC_TOPIC_FILTER_INVALID};
+
+check(#mqtt_packet_unsubscribe{topic_filters = TopicFilters}) ->
+    try validate_topic_filters(TopicFilters)
+    catch
+        error:_Error ->
+            {error, ?RC_TOPIC_FILTER_INVALID}
+    end.
+
+check_pub_props(#{'Topic-Alias' := 0}) ->
+    {error, ?RC_TOPIC_ALIAS_INVALID};
+
+check_pub_props(#{'Subscription-Identifier' := 0}) ->
+    {error, ?RC_PROTOCOL_ERROR};
+
+check_pub_props(#{'Response-Topic' := ResponseTopic}) ->
+    try emqx_topic:validate(name, ResponseTopic) of
+        true -> ok
+    catch
+        error:_Error ->
+            {error, ?RC_PROTOCOL_ERROR}
+    end;
+check_pub_props(_Props) -> ok.
+
+%% @doc Check CONNECT Packet.
+-spec(check(emqx_types:packet()|connect(), Opts :: map())
+      -> ok | {error, emqx_types:reason_code()}).
+check(?CONNECT_PACKET(ConnPkt), Opts) ->
+    check(ConnPkt, Opts);
+check(ConnPkt, Opts) when is_record(ConnPkt, mqtt_packet_connect) ->
+    run_checks([fun check_proto_ver/2,
+                fun check_client_id/2,
+                fun check_conn_props/2,
+                fun check_will_msg/2], ConnPkt, Opts).
+
+check_proto_ver(#mqtt_packet_connect{proto_ver  = Ver,
+                                     proto_name = Name}, _Opts) ->
+    case lists:member({Ver, Name}, ?PROTOCOL_NAMES) of
+        true  -> ok;
+        false -> {error, ?RC_UNSUPPORTED_PROTOCOL_VERSION}
+    end.
+
+%% MQTT3.1 does not allow null clientId
+check_client_id(#mqtt_packet_connect{proto_ver = ?MQTT_PROTO_V3,
+                                     client_id = <<>>}, _Opts) ->
+    {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID};
+%% Issue#599: Null clientId and clean_start = false
+check_client_id(#mqtt_packet_connect{client_id   = <<>>,
+                                     clean_start = false}, _Opts) ->
+    {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID};
+check_client_id(#mqtt_packet_connect{client_id   = <<>>,
+                                     clean_start = true}, _Opts) ->
+    ok;
+check_client_id(#mqtt_packet_connect{client_id = ClientId},
+                _Opts = #{max_clientid_len := MaxLen}) ->
+    case (1 =< (Len = byte_size(ClientId))) andalso (Len =< MaxLen) of
+        true  -> ok;
+        false -> {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID}
+    end.
+
+check_conn_props(#mqtt_packet_connect{properties = undefined}, _Opts) ->
+    ok;
+check_conn_props(#mqtt_packet_connect{properties = #{'Receive-Maximum' := 0}}, _Opts) ->
+    {error, ?RC_PROTOCOL_ERROR};
+check_conn_props(#mqtt_packet_connect{properties = #{'Request-Response-Information' := ReqRespInfo}}, _Opts)
+  when ReqRespInfo =/= 0, ReqRespInfo =/= 1 ->
+    {error, ?RC_PROTOCOL_ERROR};
+check_conn_props(#mqtt_packet_connect{properties = #{'Request-Problem-Information' := ReqProInfo}}, _Opts)
     when ReqProInfo =/= 0, ReqProInfo =/= 1 ->
-    error(protocol_error);
-validate_properties(_, _) ->
-    true.
+    {error, ?RC_PROTOCOL_ERROR};
+check_conn_props(_ConnPkt, _Opts) -> ok.
 
-validate_subscription({Topic, #{qos := QoS}}) ->
-    emqx_topic:validate(filter, Topic) andalso validate_qos(QoS).
+check_will_msg(#mqtt_packet_connect{will_flag = false}, _Caps) ->
+    ok;
+check_will_msg(#mqtt_packet_connect{will_retain = true},
+               _Opts = #{mqtt_retain_available := false}) ->
+    {error, ?RC_RETAIN_NOT_SUPPORTED};
+check_will_msg(#mqtt_packet_connect{will_topic = WillTopic}, _Opts) ->
+    try emqx_topic:validate(name, WillTopic) of
+        true -> ok
+    catch error:_Error ->
+        {error, ?RC_TOPIC_NAME_INVALID}
+    end.
 
-validate_qos(QoS) when ?QOS_0 =< QoS, QoS =< ?QOS_2 ->
-    true;
-validate_qos(_) -> error(bad_qos).
+run_checks([], _Packet, _Options) ->
+    ok;
+run_checks([Check|More], Packet, Options) ->
+    case Check(Packet, Options) of
+        ok -> run_checks(More, Packet, Options);
+        {error, Reason} -> {error, Reason}
+    end.
 
-%% @doc From message to packet
--spec(from_message(emqx_mqtt_types:packet_id(), emqx_types:message()) -> emqx_mqtt_types:packet()).
-from_message(PacketId, #message{qos = QoS, flags = Flags, headers = Headers,
-                                topic = Topic, payload = Payload}) ->
-    Flags1 = if Flags =:= undefined ->
-                    #{};
-                true -> Flags
-             end,
-    Dup = maps:get(dup, Flags1, false),
-    Retain = maps:get(retain, Flags1, false),
-    Publish = #mqtt_packet_publish{topic_name = Topic,
-                                   packet_id  = PacketId,
-                                   properties = publish_props(Headers)},
-    #mqtt_packet{header = #mqtt_packet_header{type   = ?PUBLISH,
-                                              dup    = Dup,
-                                              qos    = QoS,
-                                              retain = Retain},
-                 variable = Publish, payload = Payload}.
+%% @doc Validate MQTT Packet
+%% @private
+validate_topic_filters(TopicFilters) ->
+    lists:foreach(
+      fun({TopicFilter, _SubOpts}) ->
+              emqx_topic:validate(TopicFilter);
+         (TopicFilter) ->
+              emqx_topic:validate(TopicFilter)
+      end, TopicFilters).
 
-publish_props(Headers) ->
-    maps:with(['Payload-Format-Indicator',
-               'Response-Topic',
-               'Correlation-Data',
-               'User-Property',
-               'Subscription-Identifier',
-               'Content-Type',
-               'Message-Expiry-Interval'], Headers).
-
-%% @doc Message from Packet
--spec(to_message(emqx_types:credentials(), emqx_mqtt_types:packet())
-      -> emqx_types:message()).
-to_message(#{client_id := ClientId, username := Username, peername := Peername},
+%% @doc Publish Packet to Message.
+-spec(to_message(emqx_types:client(), emqx_ypes:packet()) -> emqx_types:message()).
+to_message(#{client_id := ClientId, username := Username, peerhost := PeerHost},
            #mqtt_packet{header   = #mqtt_packet_header{type   = ?PUBLISH,
                                                        retain = Retain,
                                                        qos    = QoS,
@@ -151,7 +252,7 @@ to_message(#{client_id := ClientId, username := Username, peername := Peername},
     Msg = emqx_message:make(ClientId, QoS, Topic, Payload),
     Msg#message{flags = #{dup => Dup, retain => Retain},
                 headers = merge_props(#{username => Username,
-                                        peername => Peername}, Props)}.
+                                        peerhost => PeerHost}, Props)}.
 
 -spec(will_msg(#mqtt_packet_connect{}) -> emqx_types:message()).
 will_msg(#mqtt_packet_connect{will_flag = false}) ->
@@ -173,7 +274,7 @@ merge_props(Headers, Props) ->
     maps:merge(Headers, Props).
 
 %% @doc Format packet
--spec(format(emqx_mqtt_types:packet()) -> iolist()).
+-spec(format(emqx_types:packet()) -> iolist()).
 format(#mqtt_packet{header = Header, variable = Variable, payload = Payload}) ->
     format_header(Header, format_variable(Variable, Payload)).
 
@@ -183,9 +284,10 @@ format_header(#mqtt_packet_header{type = Type,
                                   retain = Retain}, S) ->
     S1 = if
              S == undefined -> <<>>;
-             true           -> [", ", S]
+             true -> [", ", S]
          end,
-    io_lib:format("~s(Q~p, R~p, D~p~s)", [type_name(Type), QoS, i(Retain), i(Dup), S1]).
+    io_lib:format("~s(Q~p, R~p, D~p~s)",
+                  [lists:nth(Type, ?TYPE_NAMES), QoS, i(Retain), i(Dup), S1]).
 
 format_variable(undefined, _) ->
     undefined;

@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,26 +12,38 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_misc).
 
+-include("types.hrl").
+-include("logger.hrl").
+
 -export([ merge_opts/2
+        , maybe_apply/2
+        , run_fold/3
+        , pipeline/3
         , start_timer/2
         , start_timer/3
         , cancel_timer/1
         , proc_name/2
         , proc_stats/0
         , proc_stats/1
+        , index_of/2
         ]).
 
--export([ init_proc_mng_policy/1
-        , conn_proc_mng_policy/1
+-export([ drain_deliver/0
+        , drain_deliver/1
+        , drain_down/1
         ]).
 
--export([drain_down/1]).
+-compile({inline,
+          [ start_timer/2
+          , start_timer/3
+          ]}).
 
 %% @doc Merge options
--spec(merge_opts(list(), list()) -> list()).
+-spec(merge_opts(Opts, Opts) -> Opts when Opts :: proplists:proplist()).
 merge_opts(Defaults, Options) ->
     lists:foldl(
       fun({Opt, Val}, Acc) ->
@@ -38,6 +51,49 @@ merge_opts(Defaults, Options) ->
          (Opt, Acc) ->
           lists:usort([Opt | Acc])
       end, Defaults, Options).
+
+%% @doc Apply a function to a maybe argument.
+-spec(maybe_apply(fun((maybe(A)) -> maybe(A)), maybe(A))
+      -> maybe(A) when A :: any()).
+maybe_apply(_Fun, undefined) ->
+    undefined;
+maybe_apply(Fun, Arg) when is_function(Fun) ->
+    erlang:apply(Fun, [Arg]).
+
+%% @doc RunFold
+run_fold([], Acc, _State) ->
+    Acc;
+run_fold([Fun|More], Acc, State) ->
+    run_fold(More, Fun(Acc, State), State).
+
+%% @doc Pipeline
+pipeline([], Input, State) ->
+    {ok, Input, State};
+
+pipeline([Fun|More], Input, State) ->
+    try apply_fun(Fun, Input, State) of
+        ok -> pipeline(More, Input, State);
+        {ok, NState} ->
+            pipeline(More, Input, NState);
+        {ok, Output, NState} ->
+            pipeline(More, Output, NState);
+        {error, Reason} ->
+            {error, Reason, State};
+        {error, Reason, NState} ->
+            {error, Reason, NState}
+    catch
+        Error:Reason:Stacktrace ->
+            ?LOG(error, "pipeline ~p failed: ~p,\nstacktrace: ~0p",
+                [{Fun, Input, State}, {Error, Reason}, Stacktrace]),
+            {error, Reason, State}
+    end.
+
+-compile({inline, [apply_fun/3]}).
+apply_fun(Fun, Input, State) ->
+    case erlang:fun_info(Fun, arity) of
+        {arity, 1} -> Fun(Input);
+        {arity, 2} -> Fun(Input, State)
+    end.
 
 -spec(start_timer(integer(), term()) -> reference()).
 start_timer(Interval, Msg) ->
@@ -47,7 +103,7 @@ start_timer(Interval, Msg) ->
 start_timer(Interval, Dest, Msg) ->
     erlang:start_timer(Interval, Dest, Msg).
 
--spec(cancel_timer(undefined | reference()) -> ok).
+-spec(cancel_timer(maybe(reference())) -> ok).
 cancel_timer(Timer) when is_reference(Timer) ->
     case erlang:cancel_timer(Timer) of
         false ->
@@ -66,71 +122,48 @@ proc_stats() ->
 
 -spec(proc_stats(pid()) -> list()).
 proc_stats(Pid) ->
-    Stats = process_info(Pid, [message_queue_len, heap_size, reductions]),
-    {value, {_, V}, Stats1} = lists:keytake(message_queue_len, 1, Stats),
-    [{mailbox_len, V} | Stats1].
-
--define(DISABLED, 0).
-
-init_proc_mng_policy(undefined) -> ok;
-init_proc_mng_policy(Zone) ->
-    #{max_heap_size := MaxHeapSizeInBytes}
-        = ShutdownPolicy
-        = emqx_zone:get_env(Zone, force_shutdown_policy),
-    MaxHeapSize = MaxHeapSizeInBytes div erlang:system_info(wordsize),
-    _ = erlang:process_flag(max_heap_size, MaxHeapSize), % zero is discarded
-    erlang:put(force_shutdown_policy, ShutdownPolicy),
-    ok.
-
-%% @doc Check self() process status against connection/session process management policy,
-%% return `continue | hibernate | {shutdown, Reason}' accordingly.
-%% `continue': There is nothing out of the ordinary.
-%% `hibernate': Nothing to process in my mailbox, and since this check is triggered
-%%              by a timer, we assume it is a fat chance to continue idel, hence hibernate.
-%% `shutdown': Some numbers (message queue length hit the limit),
-%%             hence shutdown for greater good (system stability).
--spec(conn_proc_mng_policy(#{message_queue_len => integer()} | false) ->
-            continue | hibernate | {shutdown, _}).
-conn_proc_mng_policy(#{message_queue_len := MaxMsgQueueLen}) ->
-    Qlength = proc_info(message_queue_len),
-    Checks =
-        [{fun() -> is_message_queue_too_long(Qlength, MaxMsgQueueLen) end,
-          {shutdown, message_queue_too_long}},
-         {fun() -> Qlength > 0 end, continue},
-         {fun() -> true end, hibernate}
-        ],
-    check(Checks);
-conn_proc_mng_policy(_) ->
-    %% disable by default
-    conn_proc_mng_policy(#{message_queue_len => 0}).
-
-check([{Pred, Result} | Rest]) ->
-    case Pred() of
-        true -> Result;
-        false -> check(Rest)
+    case process_info(Pid, [message_queue_len, heap_size,
+                            total_heap_size, reductions, memory]) of
+        undefined -> [];
+        [{message_queue_len, Len}|Stats] ->
+            [{mailbox_len, Len}|Stats]
     end.
 
-is_message_queue_too_long(Qlength, Max) ->
-    is_enabled(Max) andalso Qlength > Max.
+%% @doc Drain delivers from the channel's mailbox.
+drain_deliver() ->
+    drain_deliver([]).
 
-is_enabled(Max) -> is_integer(Max) andalso Max > ?DISABLED.
+drain_deliver(Acc) ->
+    receive
+        Deliver = {deliver, _Topic, _Msg} ->
+            drain_deliver([Deliver|Acc])
+    after 0 ->
+        lists:reverse(Acc)
+    end.
 
-proc_info(Key) ->
-    {Key, Value} = erlang:process_info(self(), Key),
-    Value.
-
+%% @doc Drain process down events.
 -spec(drain_down(pos_integer()) -> list(pid())).
 drain_down(Cnt) when Cnt > 0 ->
     drain_down(Cnt, []).
 
 drain_down(0, Acc) ->
     lists:reverse(Acc);
-
 drain_down(Cnt, Acc) ->
     receive
         {'DOWN', _MRef, process, Pid, _Reason} ->
             drain_down(Cnt - 1, [Pid|Acc])
     after 0 ->
-          lists:reverse(Acc)
+        drain_down(0, Acc)
     end.
+
+%% lists:index_of/2
+index_of(E, L) ->
+    index_of(E, 1, L).
+
+index_of(_E, _I, []) ->
+    error(badarg);
+index_of(E, I, [E|_]) ->
+    I;
+index_of(E, I, [_|L]) ->
+    index_of(E, I+1, L).
 

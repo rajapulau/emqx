@@ -14,10 +14,13 @@ RUN_NODE_NAME = emqxdebug@127.0.0.1
 .PHONY: all
 all: compile
 
+.PHONY: tests
+tests: eunit ct
+
 .PHONY: run
 run: run_setup unlock
 	@rebar3 as test get-deps
-	@rebar3 as test auto --name $(RUN_NODE_NAME) --script test/run_emqx.escript
+	@rebar3 as test auto --name $(RUN_NODE_NAME) --script scripts/run_emqx.escript
 
 .PHONY: run_setup
 run_setup:
@@ -92,7 +95,7 @@ ct: ct_setup
 ## e.g. make ct-one-suite suite=emqx_bridge
 .PHONY: $(SUITES:%=ct-%)
 $(CT_SUITES:%=ct-%): ct_setup
-	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(@:ct-%=%)_SUITE
+	@rebar3 ct -v --readable=false --name $(CT_NODE_NAME) --suite=$(@:ct-%=%)_SUITE --cover
 
 .PHONY: app.config
 app.config: $(CUTTLEFISH_SCRIPT) etc/gen.emqx.conf

@@ -1,4 +1,5 @@
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -11,32 +12,27 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-
-%% @doc This module implements a request sender based on emqx_client.
-%% A request sender is a MQTT client which sends messages to a request
-%% topic, and subscribes to another topic for responses.
-%% This code is in test directory because request and response are pure
-%% client-side behaviours.
+%%--------------------------------------------------------------------
 
 -module(emqx_request_sender).
 
 -export([start_link/3, stop/1, send/6]).
 
--include("emqx_client.hrl").
+-include("emqx_mqtt.hrl").
 
 start_link(ResponseTopic, QoS, Options0) ->
     Parent = self(),
     MsgHandler = make_msg_handler(Parent),
     Options = [{msg_handler, MsgHandler} | Options0],
-    case emqx_client:start_link(Options) of
+    case emqtt:start_link(Options) of
         {ok, Pid} ->
-            {ok, _} = emqx_client:connect(Pid),
+            {ok, _} = emqtt:connect(Pid),
             try subscribe(Pid, ResponseTopic, QoS) of
                 ok -> {ok, Pid};
                 {error, _} = Error -> Error
             catch
                 C : E : S ->
-                    emqx_client:stop(Pid),
+                    emqtt:stop(Pid),
                     {error, {C, E, S}}
             end;
         {error, _} = Error -> Error
@@ -53,17 +49,17 @@ send(Client, ReqTopic, RspTopic, CorrData, Payload, QoS) ->
                     props = Props,
                     payload = Payload
                    },
-    case emqx_client:publish(Client, Msg) of
+    case emqtt:publish(Client, Msg) of
         ok -> ok; %% QoS = 0
         {ok, _} -> ok;
         {error, _} = E -> E
     end.
 
 stop(Pid) ->
-    emqx_client:disconnect(Pid).
+    emqtt:disconnect(Pid).
 
 subscribe(Client, Topic, QoS) ->
-    case emqx_client:subscribe(Client, Topic, QoS) of
+    case emqtt:subscribe(Client, Topic, QoS) of
         {ok, _, _} -> ok;
         {error, _} = Error -> Error
     end.
@@ -79,4 +75,3 @@ handle_msg(Msg, Parent) ->
     CorrData = maps:get('Correlation-Data', Props),
     Parent ! {response, CorrData, Payload},
     ok.
-

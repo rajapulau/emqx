@@ -1,5 +1,5 @@
-
-%% Copyright (c) 2013-2019 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+%% Copyright (c) 2019 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%%--------------------------------------------------------------------
 
 -module(emqx_cm_SUITE).
 
@@ -19,52 +20,71 @@
 -compile(nowarn_export_all).
 
 -include("emqx.hrl").
--include("emqx_mqtt.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
-all() -> [{group, cm}].
+%%--------------------------------------------------------------------
+%% CT callbacks
+%%--------------------------------------------------------------------
 
-groups() ->
-    [{cm, [non_parallel_tests],
-      [t_get_set_conn_attrs,
-       t_get_set_conn_stats,
-       t_lookup_conn_pid]}].
+all() -> emqx_ct:all(?MODULE).
 
 init_per_suite(Config) ->
+    emqx_ct_helpers:boot_modules(all),
     emqx_ct_helpers:start_apps([]),
     Config.
 
 end_per_suite(_Config) ->
     emqx_ct_helpers:stop_apps([]).
 
-init_per_testcase(_TestCase, Config) ->
-    register_connection(),
-    Config.
+%%--------------------------------------------------------------------
+%% TODO: Add more test cases
+%%--------------------------------------------------------------------
 
-end_per_testcase(_TestCase, _Config) ->
-    unregister_connection(),
-    ok.
+t_reg_unreg_channel(_) ->
+    ok = emqx_cm:register_channel(<<"clientid">>),
+    ?assertEqual([self()], emqx_cm:lookup_channels(<<"clientid">>)),
+    ok = emqx_cm:unregister_channel(<<"clientid">>),
+    ?assertEqual([], emqx_cm:lookup_channels(<<"clientid">>)).
 
-t_get_set_conn_attrs(_) ->
-    ?assert(emqx_cm:set_conn_attrs(<<"conn1">>, [{port, 8080}, {ip, "192.168.0.1"}])),
-    ?assert(emqx_cm:set_conn_attrs(<<"conn2">>, self(), [{port, 8080}, {ip, "192.168.0.2"}])),
-    ?assertEqual([{port, 8080}, {ip, "192.168.0.1"}], emqx_cm:get_conn_attrs(<<"conn1">>)),
-    ?assertEqual([{port, 8080}, {ip, "192.168.0.2"}], emqx_cm:get_conn_attrs(<<"conn2">>, self())).
+t_get_set_chan_attrs(_) ->
+    Attrs = #{proto_ver => 4, proto_name => <<"MQTT">>},
+    ok = emqx_cm:register_channel(<<"clientid">>),
+    ok = emqx_cm:set_chan_attrs(<<"clientid">>, Attrs),
+    ?assertEqual(Attrs, emqx_cm:get_chan_attrs(<<"clientid">>)),
+    ok = emqx_cm:unregister_channel(<<"clientid">>),
+    ?assertEqual(undefined, emqx_cm:get_chan_attrs(<<"clientid">>)).
 
-t_get_set_conn_stats(_) ->
-    ?assert(emqx_cm:set_conn_stats(<<"conn1">>, [{count, 1}, {max, 2}])),
-    ?assert(emqx_cm:set_conn_stats(<<"conn2">>, self(), [{count, 1}, {max, 2}])),
-    ?assertEqual([{count, 1}, {max, 2}], emqx_cm:get_conn_stats(<<"conn1">>)),
-    ?assertEqual([{count, 1}, {max, 2}], emqx_cm:get_conn_stats(<<"conn2">>, self())).
+t_get_set_chan_stats(_) ->
+    Stats = [{recv_oct, 10}, {send_oct, 8}],
+    ok = emqx_cm:register_channel(<<"clientid">>),
+    ok = emqx_cm:set_chan_stats(<<"clientid">>, Stats),
+    ?assertEqual(Stats, emqx_cm:get_chan_stats(<<"clientid">>)),
+    ok = emqx_cm:unregister_channel(<<"clientid">>),
+    ?assertEqual(undefined, emqx_cm:get_chan_stats(<<"clientid">>)).
 
-t_lookup_conn_pid(_) ->
-    ?assertEqual(ok, emqx_cm:register_connection(<<"conn1">>, self())),
-    ?assertEqual(self(), emqx_cm:lookup_conn_pid(<<"conn1">>)).
+t_open_session(_) ->
+    ClientInfo = #{zone => external,
+                   client_id => <<"clientid">>,
+                   username => <<"username">>,
+                   peerhost => {127,0,0,1}},
+    ConnInfo = #{peername => {{127,0,0,1}, 5000},
+                 receive_maximum => 100},
+    {ok, #{session := Session1, present := false}}
+        = emqx_cm:open_session(true, ClientInfo, ConnInfo),
+    ?assertEqual(100, emqx_session:info(max_inflight, Session1)),
+    {ok, #{session := Session2, present := false}}
+        = emqx_cm:open_session(false, ClientInfo, ConnInfo),
+    ?assertEqual(100, emqx_session:info(max_inflight, Session2)).
 
-register_connection() ->
-    ?assertEqual(ok, emqx_cm:register_connection(<<"conn1">>)),
-    ?assertEqual(ok, emqx_cm:register_connection(<<"conn2">>, self())).
+t_discard_session(_) ->
+    ok = emqx_cm:discard_session(<<"clientid">>).
 
-unregister_connection() ->
-    ?assertEqual(ok, emqx_cm:unregister_connection(<<"conn1">>)),
-    ?assertEqual(ok, emqx_cm:unregister_connection(<<"conn2">>, self())).
+t_takeover_session(_) ->
+    {error, not_found} = emqx_cm:takeover_session(<<"clientid">>).
+
+t_lock_clientid(_) ->
+    {true, _Nodes} = emqx_cm_locker:lock(<<"clientid">>),
+    {true, _Nodes} = emqx_cm_locker:lock(<<"clientid">>),
+    {true, _Nodes} = emqx_cm_locker:unlock(<<"clientid">>),
+    {true, _Nodes} = emqx_cm_locker:unlock(<<"clientid">>).
+
