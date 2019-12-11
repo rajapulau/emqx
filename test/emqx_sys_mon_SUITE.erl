@@ -28,6 +28,8 @@
                      concat_str("long_gc warning: pid = ~p, info: ~p", self(), "hello"), "hello"},
                     {self(), long_schedule,
                      concat_str("long_schedule warning: pid = ~p, info: ~p", self(), "hello"), "hello"},
+                     {self(), large_heap,
+                     concat_str("large_heap warning: pid = ~p, info: ~p", self(), "hello"), "hello"},
                     {self(), busy_port,
                      concat_str("busy_port warning: suspid = ~p, port = ~p",
                                 self(), list_to_port("#Port<0.4>")), list_to_port("#Port<0.4>")},
@@ -41,19 +43,63 @@
 
 all() -> emqx_ct:all(?MODULE).
 
-init_per_suite(Config) ->
+init_per_testcase(t_sys_mon, Config) ->
+    emqx_ct_helpers:boot_modules(all),
+    emqx_ct_helpers:start_apps([],
+        fun(emqx) ->
+            application:set_env(emqx, sysmon, [{busy_dist_port,true},
+                                                {busy_port,false},
+                                                {large_heap,8388608},
+                                                {long_schedule,240},
+                                                {long_gc,0}]),
+            ok;
+           (_) -> ok
+        end),
+    Config;
+init_per_testcase(t_sys_mon2, Config) ->
+    emqx_ct_helpers:boot_modules(all),
+    emqx_ct_helpers:start_apps([],
+        fun(emqx) ->
+            application:set_env(emqx, sysmon, [{busy_dist_port,false},
+                                                {busy_port,true},
+                                                {large_heap,8388608},
+                                                {long_schedule,0},
+                                                {long_gc,200},
+                                                {nothing, 0}]),
+            ok;
+           (_) -> ok
+        end),
+    Config;
+init_per_testcase(_, Config) ->
     emqx_ct_helpers:boot_modules(all),
     emqx_ct_helpers:start_apps([]),
     Config.
 
-end_per_suite(_Config) ->
+end_per_testcase(_, _Config) ->
     emqx_ct_helpers:stop_apps([]).
+
+t_procinfo(_) ->
+    ok = meck:new(emqx_vm, [passthrough, no_history]),
+    ok = meck:expect(emqx_vm, get_process_info, fun(_) -> [] end),
+    ok = meck:expect(emqx_vm, get_process_gc_info, fun(_) -> [] end),
+    ?assertEqual([], emqx_sys_mon:procinfo([])),
+    ok = meck:expect(emqx_vm, get_process_info, fun(_) -> ok end),
+    ok = meck:expect(emqx_vm, get_process_gc_info, fun(_) -> undefined end),
+    ?assertEqual(undefined, emqx_sys_mon:procinfo([])),
+    ok = meck:unload(emqx_vm).
 
 t_sys_mon(_Config) ->
     lists:foreach(
       fun({PidOrPort, SysMonName,ValidateInfo, InfoOrPort}) ->
               validate_sys_mon_info(PidOrPort, SysMonName,ValidateInfo, InfoOrPort)
       end, ?INPUTINFO).
+
+t_sys_mon2(_Config) ->
+    ?SYSMON ! {timeout, ignored, reset},
+    ?SYSMON ! {ignored},
+    ?assertEqual(ignored, gen_server:call(?SYSMON, ignored)),
+    ?assertEqual(ok, gen_server:cast(?SYSMON, ignored)),
+    gen_server:stop(?SYSMON).
 
 validate_sys_mon_info(PidOrPort, SysMonName,ValidateInfo, InfoOrPort) ->
     {ok, C} = emqtt:start_link([{host, "localhost"}]),

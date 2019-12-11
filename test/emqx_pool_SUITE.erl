@@ -39,6 +39,7 @@ groups() ->
     ].
 
 init_per_suite(Config) ->
+    ok = emqx_logger:set_log_level(emergency),
     application:ensure_all_started(gproc),
     Config.
 
@@ -85,3 +86,5 @@ t_unexpected(_) ->
 test_mfa() ->
     lists:foldl(fun(X, Sum) -> X + Sum end, 0, [1,2,3,4,5]).
 
+% t_async_submit(_) ->
+%     error('TODO').

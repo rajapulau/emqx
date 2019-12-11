@@ -46,35 +46,39 @@ t_reg_unreg_channel(_) ->
     ok = emqx_cm:unregister_channel(<<"clientid">>),
     ?assertEqual([], emqx_cm:lookup_channels(<<"clientid">>)).
 
-t_get_set_chan_attrs(_) ->
-    Attrs = #{proto_ver => 4, proto_name => <<"MQTT">>},
-    ok = emqx_cm:register_channel(<<"clientid">>),
-    ok = emqx_cm:set_chan_attrs(<<"clientid">>, Attrs),
-    ?assertEqual(Attrs, emqx_cm:get_chan_attrs(<<"clientid">>)),
+t_get_set_chan_info(_) ->
+    Info = #{proto_ver => 4, proto_name => <<"MQTT">>},
+    ok = emqx_cm:register_channel(<<"clientid">>, Info, []),
+    ?assertEqual(Info, emqx_cm:get_chan_info(<<"clientid">>)),
+    Info1 = Info#{proto_ver => 5},
+    true = emqx_cm:set_chan_info(<<"clientid">>, Info1),
+    ?assertEqual(Info1, emqx_cm:get_chan_info(<<"clientid">>)),
     ok = emqx_cm:unregister_channel(<<"clientid">>),
-    ?assertEqual(undefined, emqx_cm:get_chan_attrs(<<"clientid">>)).
+    ?assertEqual(undefined, emqx_cm:get_chan_info(<<"clientid">>)).
 
 t_get_set_chan_stats(_) ->
     Stats = [{recv_oct, 10}, {send_oct, 8}],
-    ok = emqx_cm:register_channel(<<"clientid">>),
-    ok = emqx_cm:set_chan_stats(<<"clientid">>, Stats),
+    ok = emqx_cm:register_channel(<<"clientid">>, #{}, Stats),
     ?assertEqual(Stats, emqx_cm:get_chan_stats(<<"clientid">>)),
+    Stats1 = [{recv_oct, 10}|Stats],
+    true = emqx_cm:set_chan_stats(<<"clientid">>, Stats1),
+    ?assertEqual(Stats1, emqx_cm:get_chan_stats(<<"clientid">>)),
     ok = emqx_cm:unregister_channel(<<"clientid">>),
     ?assertEqual(undefined, emqx_cm:get_chan_stats(<<"clientid">>)).
 
 t_open_session(_) ->
     ClientInfo = #{zone => external,
-                   client_id => <<"clientid">>,
+                   clientid => <<"clientid">>,
                    username => <<"username">>,
                    peerhost => {127,0,0,1}},
     ConnInfo = #{peername => {{127,0,0,1}, 5000},
                  receive_maximum => 100},
     {ok, #{session := Session1, present := false}}
         = emqx_cm:open_session(true, ClientInfo, ConnInfo),
-    ?assertEqual(100, emqx_session:info(max_inflight, Session1)),
+    ?assertEqual(100, emqx_session:info(inflight_max, Session1)),
     {ok, #{session := Session2, present := false}}
         = emqx_cm:open_session(false, ClientInfo, ConnInfo),
-    ?assertEqual(100, emqx_session:info(max_inflight, Session2)).
+    ?assertEqual(100, emqx_session:info(inflight_max, Session2)).
 
 t_discard_session(_) ->
     ok = emqx_cm:discard_session(<<"clientid">>).
@@ -88,3 +92,27 @@ t_lock_clientid(_) ->
     {true, _Nodes} = emqx_cm_locker:unlock(<<"clientid">>),
     {true, _Nodes} = emqx_cm_locker:unlock(<<"clientid">>).
 
+
+% t_unregister_channel(_) ->
+%     error('TODO').
+
+% t_get_chan_attrs(_) ->
+%     error('TODO').
+
+% t_get_chan_stats(_) ->
+%     error('TODO').
+
+% t_lookup_channels(_) ->
+%     error('TODO').
+
+% t_set_chan_stats(_) ->
+%     error('TODO').
+
+% t_set_chan_attrs(_) ->
+%     error('TODO').
+
+% t_register_channel(_) ->
+%     error('TODO').
+
+% t_stats_fun(_) ->
+%     error('TODO').

@@ -14,7 +14,7 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
--module(emqx_oom_SUITE).
+-module(emqx_cm_locker_SUITE).
 
 -compile(export_all).
 -compile(nowarn_export_all).
@@ -23,22 +23,23 @@
 
 all() -> emqx_ct:all(?MODULE).
 
-t_init(_) ->
-    Opts = #{message_queue_len => 10,
-             max_heap_size => 1024*1024*8
-            },
-    Oom = emqx_oom:init(Opts),
-    ?assertEqual(#{message_queue_len => 10,
-                   max_heap_size => 1024*1024
-                  }, emqx_oom:info(Oom)).
+init_per_suite(Config) ->
+    emqx_ct_helpers:boot_modules(all),
+    emqx_ct_helpers:start_apps([]),
+    Config.
 
-t_check(_) ->
-    Opts = #{message_queue_len => 10,
-             max_heap_size => 1024*1024*8
-            },
-    Oom = emqx_oom:init(Opts),
-    [self() ! {msg, I} || I <- lists:seq(1, 5)],
-    ?assertEqual(ok, emqx_oom:check(Oom)),
-    [self() ! {msg, I} || I <- lists:seq(1, 6)],
-    ?assertEqual({shutdown, message_queue_too_long}, emqx_oom:check(Oom)).
+end_per_suite(_Config) ->
+    emqx_ct_helpers:stop_apps([]).
 
+t_start_link(_) ->
+    emqx_cm_locker:start_link().
+
+t_trans(_) ->
+    ok = emqx_cm_locker:trans(undefined, fun(_) -> ok end, []),
+    ok = emqx_cm_locker:trans(<<"clientid">>, fun(_) -> ok end).
+
+t_lock_unlocak(_) ->
+    {true, _Nodes} = emqx_cm_locker:lock(<<"clientid">>),
+    {true, _Nodes} = emqx_cm_locker:lock(<<"clientid">>),
+    {true, _Nodes} = emqx_cm_locker:unlock(<<"clientid">>),
+    {true, _Nodes} = emqx_cm_locker:unlock(<<"clientid">>).

@@ -82,17 +82,23 @@ t_check_publish(_) ->
     Props = #{'Response-Topic' => <<"responsetopic">>, 'Topic-Alias' => 1},
     ok = emqx_packet:check(?PUBLISH_PACKET(?QOS_1, <<"topic">>, 1, Props, <<"payload">>)),
     ok = emqx_packet:check(#mqtt_packet_publish{packet_id = 1, topic_name = <<"t">>}),
+
+    {error, ?RC_PROTOCOL_ERROR} = emqx_packet:check(#mqtt_packet_publish{topic_name = <<>>,
+                                                                         properties = #{'Topic-Alias'=> 0}
+                                                                        }),
     {error, ?RC_PROTOCOL_ERROR} = emqx_packet:check(?PUBLISH_PACKET(?QOS_1, <<>>, 1, #{}, <<"payload">>)),
     {error, ?RC_TOPIC_NAME_INVALID} = emqx_packet:check(?PUBLISH_PACKET(?QOS_1, <<"+/+">>, 1, #{}, <<"payload">>)),
     {error, ?RC_TOPIC_ALIAS_INVALID} = emqx_packet:check(?PUBLISH_PACKET(1, <<"topic">>, 1, #{'Topic-Alias' => 0}, <<"payload">>)),
     %% TODO::
     %% {error, ?RC_PROTOCOL_ERROR} = emqx_packet:check(?PUBLISH_PACKET(1, <<"topic">>, 1, #{'Subscription-Identifier' => 10}, <<"payload">>)),
     ok = emqx_packet:check(?PUBLISH_PACKET(1, <<"topic">>, 1, #{'Subscription-Identifier' => 10}, <<"payload">>)),
+    {error, ?RC_PROTOCOL_ERROR} = emqx_packet:check(?PUBLISH_PACKET(1, <<"topic">>, 1, #{'Subscription-Identifier' => 0}, <<"payload">>)),
     {error, ?RC_PROTOCOL_ERROR} = emqx_packet:check(?PUBLISH_PACKET(1, <<"topic">>, 1, #{'Response-Topic' => <<"+/+">>}, <<"payload">>)).
 
 t_check_subscribe(_) ->
     ok = emqx_packet:check(?SUBSCRIBE_PACKET(1, #{'Subscription-Identifier' => 1},
                                              [{<<"topic">>, #{qos => ?QOS_0}}])),
+    {error, ?RC_TOPIC_FILTER_INVALID} = emqx_packet:check(#mqtt_packet_subscribe{topic_filters = []}),
     {error, ?RC_SUBSCRIPTION_IDENTIFIERS_NOT_SUPPORTED} =
     emqx_packet:check(?SUBSCRIBE_PACKET(1, #{'Subscription-Identifier' => -1},
                                         [{<<"topic">>, #{qos => ?QOS_0, rp => 0}}])).
@@ -104,7 +110,11 @@ t_check_unsubscribe(_) ->
 t_check_connect(_) ->
     Opts = #{max_clientid_len => 5, mqtt_retain_available => false},
     ok = emqx_packet:check(#mqtt_packet_connect{}, Opts),
-    ok = emqx_packet:check(?CONNECT_PACKET(#mqtt_packet_connect{properties = #{'Receive-Maximum' => 1}}), Opts),
+    ok = emqx_packet:check(?CONNECT_PACKET(#mqtt_packet_connect{clientid = <<1>>,
+                                                                properties = #{'Receive-Maximum' => 1},
+                                                                will_flag  = true,
+                                                                will_topic = <<"will_topic">>}
+                                                            ), Opts),
     ConnPkt1 = #mqtt_packet_connect{proto_name = <<"MQIsdp">>,
                                     proto_ver  = ?MQTT_PROTO_V5
                                    },
@@ -112,11 +122,11 @@ t_check_connect(_) ->
 
     ConnPkt2 = #mqtt_packet_connect{proto_ver  = ?MQTT_PROTO_V3,
                                     proto_name = <<"MQIsdp">>,
-                                    client_id  = <<>>
+                                    clientid   = <<>>
                                    },
     {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID} = emqx_packet:check(ConnPkt2, Opts),
 
-    ConnPkt3 = #mqtt_packet_connect{client_id = <<"123456">>},
+    ConnPkt3 = #mqtt_packet_connect{clientid = <<"123456">>},
     {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID} = emqx_packet:check(ConnPkt3, Opts),
 
     ConnPkt4 = #mqtt_packet_connect{will_flag   = true,
@@ -137,13 +147,17 @@ t_check_connect(_) ->
                                                        properties = #{'Request-Problem-Information' => 2}}), Opts),
     {error, ?RC_PROTOCOL_ERROR} = emqx_packet:check(
                                     ?CONNECT_PACKET(#mqtt_packet_connect{
-                                                       properties = #{'Receive-Maximum' => 0}}), Opts).
+                                                       properties = #{'Receive-Maximum' => 0}}), Opts),
+    ConnPkt7 = #mqtt_packet_connect{clientid   = <<>>, clean_start = false},
+    {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID} = emqx_packet:check(ConnPkt7, Opts).
 
 t_from_to_message(_) ->
     ExpectedMsg = emqx_message:make(<<"clientid">>, ?QOS_0, <<"topic">>, <<"payload">>),
     ExpectedMsg1 = emqx_message:set_flag(retain, false, ExpectedMsg),
     ExpectedMsg2 = emqx_message:set_headers(#{peerhost => {127,0,0,1},
-                                              username => <<"test">>}, ExpectedMsg1),
+                                              protocol => mqtt,
+                                              username => <<"test">>
+                                             }, ExpectedMsg1),
     Pkt = #mqtt_packet{header = #mqtt_packet_header{type   = ?PUBLISH,
                                                     qos    = ?QOS_0,
                                                     retain = false,
@@ -152,7 +166,8 @@ t_from_to_message(_) ->
                                                        packet_id  = 10,
                                                        properties = #{}},
                        payload = <<"payload">>},
-    MsgFromPkt = emqx_packet:to_message(#{client_id => <<"clientid">>,
+    MsgFromPkt = emqx_packet:to_message(#{protocol => mqtt,
+                                          clientid => <<"clientid">>,
                                           username => <<"test">>,
                                           peerhost => {127,0,0,1}}, Pkt),
     ?assertEqual(ExpectedMsg2, MsgFromPkt#message{id = emqx_message:id(ExpectedMsg),
@@ -160,8 +175,9 @@ t_from_to_message(_) ->
                                                  }).
 
 t_will_msg(_) ->
+    ?assertEqual(undefined, emqx_packet:will_msg(#mqtt_packet_connect{will_flag = false})),
     Pkt = #mqtt_packet_connect{will_flag = true,
-                               client_id = <<"clientid">>,
+                               clientid = <<"clientid">>,
                                username = "test",
                                will_retain = true,
                                will_qos = ?QOS_2,
@@ -171,10 +187,30 @@ t_will_msg(_) ->
                               },
     Msg = emqx_packet:will_msg(Pkt),
     ?assertEqual(<<"clientid">>, Msg#message.from),
-    ?assertEqual(<<"topic">>, Msg#message.topic).
+    ?assertEqual(<<"topic">>, Msg#message.topic),
+    Pkt2 = #mqtt_packet_connect{will_flag = true,
+                               clientid = <<"clientid">>,
+                               username = "test",
+                               will_retain = true,
+                               will_qos = ?QOS_2,
+                               will_topic = <<"topic">>,
+                               will_props = undefined,
+                               will_payload = <<"payload">>
+                              },
+    Msg2 = emqx_packet:will_msg(Pkt2),
+    ?assertEqual(<<"clientid">>, Msg2#message.from),
+    ?assertEqual(<<"topic">>, Msg2#message.topic).
 
 t_format(_) ->
-    io:format("~s", [emqx_packet:format(?CONNECT_PACKET(#mqtt_packet_connect{}))]),
+    io:format("~s", [emqx_packet:format(#mqtt_packet{header = #mqtt_packet_header{type = ?CONNACK, retain = true, dup = 0}, variable = undefined})]),
+    io:format("~s", [emqx_packet:format(#mqtt_packet{header = #mqtt_packet_header{type = ?CONNACK}, variable = 1, payload = <<"payload">>})]),
+    io:format("~s", [emqx_packet:format(?CONNECT_PACKET(#mqtt_packet_connect{will_flag = true,
+                                                                             will_retain = true,
+                                                                             will_qos = ?QOS_2,
+                                                                             will_topic = <<"topic">>,
+                                                                             will_props = undefined,
+                                                                             will_payload = <<"payload">>}))]),
+    io:format("~s", [emqx_packet:format(?CONNECT_PACKET(#mqtt_packet_connect{password = password}))]),
     io:format("~s", [emqx_packet:format(?CONNACK_PACKET(?CONNACK_SERVER))]),
     io:format("~s", [emqx_packet:format(?PUBLISH_PACKET(?QOS_1, 1))]),
     io:format("~s", [emqx_packet:format(?PUBLISH_PACKET(?QOS_2, <<"topic">>, 10, <<"payload">>))]),
@@ -183,5 +219,6 @@ t_format(_) ->
     io:format("~s", [emqx_packet:format(?SUBSCRIBE_PACKET(15, [{<<"topic">>, ?QOS_0}, {<<"topic1">>, ?QOS_1}]))]),
     io:format("~s", [emqx_packet:format(?SUBACK_PACKET(40, [?QOS_0, ?QOS_1]))]),
     io:format("~s", [emqx_packet:format(?UNSUBSCRIBE_PACKET(89, [<<"t">>, <<"t2">>]))]),
-    io:format("~s", [emqx_packet:format(?UNSUBACK_PACKET(90))]).
+    io:format("~s", [emqx_packet:format(?UNSUBACK_PACKET(90))]),
+    io:format("~s", [emqx_packet:format(?DISCONNECT_PACKET(128))]).
 

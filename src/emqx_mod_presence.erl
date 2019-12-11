@@ -62,7 +62,7 @@ on_client_connected(ClientInfo, ConnAck, ConnInfo, Env) ->
                  connack => ConnAck,
                  clean_start => CleanStart,
                  expiry_interval => ExpiryInterval,
-                 ts => emqx_time:now_ms()
+                 ts => erlang:system_time(millisecond)
                 },
     case emqx_json:safe_encode(Presence) of
         {ok, Payload} ->
@@ -78,7 +78,7 @@ on_client_disconnected(ClientInfo, Reason, ConnInfo, Env) ->
     Presence = #{clientid => ClientId,
                  username => Username,
                  reason => reason(Reason),
-                 ts => emqx_time:now_ms()
+                 ts => erlang:system_time(millisecond)
                 },
     case emqx_json:safe_encode(Presence) of
         {ok, Payload} ->
@@ -88,8 +88,8 @@ on_client_disconnected(ClientInfo, Reason, ConnInfo, Env) ->
             ?LOG(error, "Failed to encode 'disconnected' presence: ~p", [Presence])
     end.
 
-clientid(#{client_id := undefined}, #{client_id := ClientId}) -> ClientId;
-clientid(#{client_id := ClientId}, _ConnInfo) -> ClientId.
+clientid(#{clientid := undefined}, #{clientid := ClientId}) -> ClientId;
+clientid(#{clientid := ClientId}, _ConnInfo) -> ClientId.
 
 username(#{username := undefined}, #{username := Username}) -> Username;
 username(#{username := Username}, _ConnInfo) -> Username.
@@ -112,5 +112,5 @@ reason({Error, _}) when is_atom(Error) -> Error;
 reason(_) -> internal_error.
 
 -compile({inline, [ntoa/1]}).
-ntoa(IpAddr) -> iolist_to_binary(esockd_net:ntoa(IpAddr)).
+ntoa(IpAddr) -> iolist_to_binary(inet:ntoa(IpAddr)).
 

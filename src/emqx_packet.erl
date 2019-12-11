@@ -37,6 +37,7 @@
         ]).
 
 -export([ to_message/2
+        , to_message/3
         , will_msg/1
         ]).
 
@@ -110,7 +111,10 @@ check(#mqtt_packet{variable = SubPkt}) when is_record(SubPkt, mqtt_packet_subscr
 check(#mqtt_packet{variable = UnsubPkt}) when is_record(UnsubPkt, mqtt_packet_unsubscribe) ->
     check(UnsubPkt);
 
-check(#mqtt_packet_publish{topic_name = <<>>, properties = #{'Topic-Alias':= _TopicAlias}}) ->
+%% A Topic Alias of 0 is not permitted.
+check(#mqtt_packet_publish{topic_name = <<>>, properties = #{'Topic-Alias':= 0}}) ->
+    {error, ?RC_PROTOCOL_ERROR};
+check(#mqtt_packet_publish{topic_name = <<>>, properties = #{'Topic-Alias':= _Alias}}) ->
     ok;
 check(#mqtt_packet_publish{topic_name = <<>>, properties = #{}}) ->
     {error, ?RC_PROTOCOL_ERROR};
@@ -174,24 +178,24 @@ check(ConnPkt, Opts) when is_record(ConnPkt, mqtt_packet_connect) ->
 
 check_proto_ver(#mqtt_packet_connect{proto_ver  = Ver,
                                      proto_name = Name}, _Opts) ->
-    case lists:member({Ver, Name}, ?PROTOCOL_NAMES) of
-        true  -> ok;
-        false -> {error, ?RC_UNSUPPORTED_PROTOCOL_VERSION}
+    case proplists:get_value(Ver, ?PROTOCOL_NAMES) of
+        Name   -> ok;
+        _Other -> {error, ?RC_UNSUPPORTED_PROTOCOL_VERSION}
     end.
 
 %% MQTT3.1 does not allow null clientId
 check_client_id(#mqtt_packet_connect{proto_ver = ?MQTT_PROTO_V3,
-                                     client_id = <<>>}, _Opts) ->
+                                     clientid  = <<>>}, _Opts) ->
     {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID};
 %% Issue#599: Null clientId and clean_start = false
-check_client_id(#mqtt_packet_connect{client_id   = <<>>,
+check_client_id(#mqtt_packet_connect{clientid    = <<>>,
                                      clean_start = false}, _Opts) ->
     {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID};
-check_client_id(#mqtt_packet_connect{client_id   = <<>>,
+check_client_id(#mqtt_packet_connect{clientid    = <<>>,
                                      clean_start = true}, _Opts) ->
     ok;
-check_client_id(#mqtt_packet_connect{client_id = ClientId},
-                _Opts = #{max_clientid_len := MaxLen}) ->
+check_client_id(#mqtt_packet_connect{clientid = ClientId},
+                #{max_clientid_len := MaxLen} = _Opts) ->
     case (1 =< (Len = byte_size(ClientId))) andalso (Len =< MaxLen) of
         true  -> ok;
         false -> {error, ?RC_CLIENT_IDENTIFIER_NOT_VALID}
@@ -226,7 +230,7 @@ run_checks([], _Packet, _Options) ->
 run_checks([Check|More], Packet, Options) ->
     case Check(Packet, Options) of
         ok -> run_checks(More, Packet, Options);
-        {error, Reason} -> {error, Reason}
+        Error = {error, _Reason} -> Error
     end.
 
 %% @doc Validate MQTT Packet
@@ -239,34 +243,48 @@ validate_topic_filters(TopicFilters) ->
               emqx_topic:validate(TopicFilter)
       end, TopicFilters).
 
-%% @doc Publish Packet to Message.
--spec(to_message(emqx_types:client(), emqx_ypes:packet()) -> emqx_types:message()).
-to_message(#{client_id := ClientId, username := Username, peerhost := PeerHost},
+-spec(to_message(emqx_types:clientinfo(), emqx_ypes:packet()) -> emqx_types:message()).
+to_message(ClientInfo, Packet) ->
+    to_message(ClientInfo, #{}, Packet).
+
+%% @doc Transform Publish Packet to Message.
+-spec(to_message(emqx_types:clientinfo(), map(), emqx_ypes:packet())
+      -> emqx_types:message()).
+to_message(#{protocol := Protocol,
+             clientid := ClientId,
+             username := Username,
+             peerhost := PeerHost
+            }, Headers,
            #mqtt_packet{header   = #mqtt_packet_header{type   = ?PUBLISH,
                                                        retain = Retain,
                                                        qos    = QoS,
-                                                       dup    = Dup},
+                                                       dup    = Dup
+                                                      },
                         variable = #mqtt_packet_publish{topic_name = Topic,
-                                                        properties = Props},
-                        payload  = Payload}) ->
+                                                        properties = Props
+                                                       },
+                        payload  = Payload
+                       }) ->
     Msg = emqx_message:make(ClientId, QoS, Topic, Payload),
-    Msg#message{flags = #{dup => Dup, retain => Retain},
-                headers = merge_props(#{username => Username,
-                                        peerhost => PeerHost}, Props)}.
+    Headers1 = merge_props(Headers#{protocol => Protocol,
+                                    username => Username,
+                                    peerhost => PeerHost
+                                   }, Props),
+    Msg#message{flags = #{dup => Dup, retain => Retain}, headers = Headers1}.
 
 -spec(will_msg(#mqtt_packet_connect{}) -> emqx_types:message()).
 will_msg(#mqtt_packet_connect{will_flag = false}) ->
     undefined;
-will_msg(#mqtt_packet_connect{client_id    = ClientId,
+will_msg(#mqtt_packet_connect{clientid     = ClientId,
                               username     = Username,
                               will_retain  = Retain,
                               will_qos     = QoS,
                               will_topic   = Topic,
-                              will_props   = Properties,
+                              will_props   = Props,
                               will_payload = Payload}) ->
     Msg = emqx_message:make(ClientId, QoS, Topic, Payload),
-    Msg#message{flags = #{dup => false, retain => Retain},
-                headers = merge_props(#{username => Username}, Properties)}.
+    Headers = merge_props(#{username => Username}, Props),
+    Msg#message{flags = #{dup => false, retain => Retain}, headers = Headers}.
 
 merge_props(Headers, undefined) ->
     Headers;
@@ -304,7 +322,7 @@ format_variable(#mqtt_packet_connect{
                  will_flag    = WillFlag,
                  clean_start  = CleanStart,
                  keepalive    = KeepAlive,
-                 client_id    = ClientId,
+                 clientid     = ClientId,
                  will_topic   = WillTopic,
                  will_payload = WillPayload,
                  username     = Username,

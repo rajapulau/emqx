@@ -25,7 +25,7 @@
                {server_keepalive, 60},
                {upgrade_qos, false},
                {session_expiry_interval, 7200},
-               {retry_interval, 20000},
+               {retry_interval, 20},
                {mqueue_store_qos0, true},
                {mqueue_priorities, none},
                {mqueue_default_priority, highest},
@@ -43,7 +43,7 @@
                {enable_flapping_detect, false},
                {enable_ban, true},
                {enable_acl, true},
-               {await_rel_timeout, 300000},
+               {await_rel_timeout, 300},
                {acl_deny_action, ignore}
               ]).
 
@@ -56,6 +56,7 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(_Config) ->
+    emqx_zone:unset_all_env(),
     application:unset_env(emqx, zone_env),
     application:unset_env(emqx, zones).
 
@@ -99,3 +100,5 @@ t_uncovered_func(_) ->
     ok = Pid ! ok,
     emqx_zone:stop().
 
+t_frame_options(_) ->
+    ?assertMatch(#{strict_mode := _, max_size := _ }, emqx_zone:mqtt_frame_options(zone)).

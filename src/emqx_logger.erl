@@ -38,11 +38,12 @@
 
 %% Configs
 -export([ set_metadata_peername/1
-        , set_metadata_client_id/1
+        , set_metadata_clientid/1
         , set_proc_metadata/1
         , set_primary_log_level/1
         , set_log_handler_level/2
         , set_log_level/1
+        , set_all_log_handlers_level/1
         ]).
 
 -export([ get_primary_log_level/0
@@ -121,11 +122,11 @@ critical(Format, Args) ->
 critical(Metadata, Format, Args) when is_map(Metadata) ->
     logger:critical(Format, Args, Metadata).
 
--spec(set_metadata_client_id(emqx_types:client_id()) -> ok).
-set_metadata_client_id(<<>>) ->
+-spec(set_metadata_clientid(emqx_types:clientid()) -> ok).
+set_metadata_clientid(<<>>) ->
     ok;
-set_metadata_client_id(ClientId) ->
-    set_proc_metadata(#{client_id => ClientId}).
+set_metadata_clientid(ClientId) ->
+    set_proc_metadata(#{clientid => ClientId}).
 
 -spec(set_metadata_peername(peername_str()) -> ok).
 set_metadata_peername(Peername) ->
@@ -181,12 +182,9 @@ log_hanlder_info(#{id := Id, level := Level, module := logger_std_h,
                                                     Type =:= standard_error ->
     {Id, Level, console};
 log_hanlder_info(#{id := Id, level := Level, module := logger_std_h,
-                   config := #{type := Type}}) ->
-    case Type of
-        {file, Filename} -> {Id, Level, Filename};
-        {file, Filename, _Opts} -> {Id, Level, Filename};
-        _ -> {Id, Level, unknown}
-    end;
+                   config := Config = #{type := file}}) ->
+    {Id, Level, maps:get(file, Config, atom_to_list(Id))};
+
 log_hanlder_info(#{id := Id, level := Level, module := logger_disk_log_h,
                    config := #{file := Filename}}) ->
     {Id, Level, Filename};

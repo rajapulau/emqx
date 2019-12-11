@@ -14,29 +14,15 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
--module(emqx_modules_SUITE).
+-module(emqx_mod_presence_SUITE).
 
-%% API
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include("emqx.hrl").
 -include("emqx_mqtt.hrl").
-
-%%-include_lib("proper/include/proper.hrl").
--include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
-%%-define(PROPTEST(M,F), true = proper:quickcheck(M:F())).
-
--define(RULES, [{rewrite,<<"x/#">>,<<"^x/y/(.+)$">>,<<"z/y/$1">>},
-                {rewrite,<<"y/+/z/#">>,<<"^y/(.+)/z/(.+)$">>,<<"y/z/$2">>}
-               ]).
-
 all() -> emqx_ct:all(?MODULE).
-
-suite() ->
-    [{ct_hooks,[cth_surefire]}, {timetrap, {seconds, 30}}].
 
 init_per_suite(Config) ->
     emqx_ct_helpers:boot_modules(all),
@@ -48,18 +34,14 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     emqx_ct_helpers:stop_apps([emqx]).
 
-%%--------------------------------------------------------------------
-%% Test cases
-%%--------------------------------------------------------------------
-
 %% Test case for emqx_mod_presence
 t_mod_presence(_) ->
     ok = emqx_mod_presence:load([{qos, ?QOS_1}]),
-    {ok, C1} = emqtt:start_link([{client_id, <<"monsys">>}]),
+    {ok, C1} = emqtt:start_link([{clientid, <<"monsys">>}]),
     {ok, _} = emqtt:connect(C1),
     {ok, _Props, [?QOS_1]} = emqtt:subscribe(C1, <<"$SYS/brokers/+/clients/#">>, qos1),
     %% Connected Presence
-    {ok, C2} = emqtt:start_link([{client_id, <<"clientid">>},
+    {ok, C2} = emqtt:start_link([{clientid, <<"clientid">>},
                                  {username, <<"username">>}]),
     {ok, _} = emqtt:connect(C2),
     ok = recv_and_check_presence(<<"clientid">>, <<"connected">>),
@@ -91,55 +73,8 @@ recv_and_check_presence(ClientId, Presence) ->
         <<"disconnected">> ->
             ?assertMatch(#{clientid := <<"clientid">>,
                            username := <<"username">>,
-                           reason := <<"closed">>}, emqx_json:decode(Payload, [{labels, atom}, return_maps]))
+                           reason := <<"normal">>}, emqx_json:decode(Payload, [{labels, atom}, return_maps]))
     end.
-
-%% Test case for emqx_mod_subscription
-t_mod_subscription(_) ->
-    emqx_mod_subscription:load([{<<"connected/%c/%u">>, ?QOS_0}]),
-    {ok, C} = emqtt:start_link([{host, "localhost"},
-                                {client_id, "myclient"},
-                                {username, "admin"}]),
-    {ok, _} = emqtt:connect(C),
-    emqtt:publish(C, <<"connected/myclient/admin">>, <<"Hello world">>, ?QOS_0),
-    {ok, #{topic := Topic, payload := Payload}} = receive_publish(100),
-    ?assertEqual(<<"connected/myclient/admin">>, Topic),
-    ?assertEqual(<<"Hello world">>, Payload),
-    ok = emqtt:disconnect(C),
-    emqx_mod_subscription:unload([]).
-
-%% Test case for emqx_mod_write
-t_mod_rewrite(_Config) ->
-    ok = emqx_mod_rewrite:load(?RULES),
-    {ok, C} = emqtt:start_link([{client_id, <<"rewrite_client">>}]),
-    {ok, _} = emqtt:connect(C),
-    OrigTopics = [<<"x/y/2">>, <<"x/1/2">>, <<"y/a/z/b">>, <<"y/def">>],
-    DestTopics = [<<"z/y/2">>, <<"x/1/2">>, <<"y/z/b">>, <<"y/def">>],
-    %% Subscribe
-    {ok, _Props, _} = emqtt:subscribe(C, [{Topic, ?QOS_1} || Topic <- OrigTopics]),
-    timer:sleep(100),
-    Subscriptions = emqx_broker:subscriptions(<<"rewrite_client">>),
-    ?assertEqual(DestTopics, [Topic || {Topic, _SubOpts} <- Subscriptions]),
-    %% Publish
-    RecvTopics = [begin
-                      ok = emqtt:publish(C, Topic, <<"payload">>),
-                      {ok, #{topic := RecvTopic}} = receive_publish(100),
-                      RecvTopic
-                  end || Topic <- OrigTopics],
-    ?assertEqual(DestTopics, RecvTopics),
-    %% Unsubscribe
-    {ok, _, _} = emqtt:unsubscribe(C, OrigTopics),
-    timer:sleep(100),
-    ?assertEqual([], emqx_broker:subscriptions(<<"rewrite_client">>)),
-    ok = emqtt:disconnect(C),
-    ok = emqx_mod_rewrite:unload(?RULES).
-
-t_rewrite_rule(_Config) ->
-    Rules = emqx_mod_rewrite:compile(?RULES),
-    ?assertEqual(<<"z/y/2">>, emqx_mod_rewrite:match_and_rewrite(<<"x/y/2">>, Rules)),
-    ?assertEqual(<<"x/1/2">>, emqx_mod_rewrite:match_and_rewrite(<<"x/1/2">>, Rules)),
-    ?assertEqual(<<"y/z/b">>, emqx_mod_rewrite:match_and_rewrite(<<"y/a/z/b">>, Rules)),
-    ?assertEqual(<<"y/def">>, emqx_mod_rewrite:match_and_rewrite(<<"y/def">>, Rules)).
 
 %%--------------------------------------------------------------------
 %% Internal functions
@@ -151,4 +86,3 @@ receive_publish(Timeout) ->
     after
         Timeout -> {error, timeout}
     end.
-

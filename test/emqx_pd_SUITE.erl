@@ -24,9 +24,9 @@
 all() -> emqx_ct:all(?MODULE).
 
 t_update_counter(_) ->
-    ?assertEqual(undefined, emqx_pd:update_counter(bytes, 1)),
-    ?assertEqual(1, emqx_pd:update_counter(bytes, 1)),
-    ?assertEqual(2, emqx_pd:update_counter(bytes, 1)),
+    ?assertEqual(undefined, emqx_pd:inc_counter(bytes, 1)),
+    ?assertEqual(1, emqx_pd:inc_counter(bytes, 1)),
+    ?assertEqual(2, emqx_pd:inc_counter(bytes, 1)),
     ?assertEqual(3, emqx_pd:get_counter(bytes)),
     ?assertEqual(3, emqx_pd:reset_counter(bytes)),
     ?assertEqual(0, emqx_pd:get_counter(bytes)).
